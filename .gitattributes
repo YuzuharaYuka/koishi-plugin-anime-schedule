@@ -1,0 +1,22 @@
+# 统一换行符：仓库里一律 LF，检出到 Windows 时也不转成 CRLF
+* text=auto eol=lf
+
+# 二进制文件不要做换行转换
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.webp binary
+*.gif binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.otf binary
+*.img binary
+
+# 锁文件在 diff 里没什么可读性
+pnpm-lock.yaml -diff
+package-lock.json -diff
+yarn.lock -diff
+
+# 导出/快照类文件不参与语言统计
+target/** linguist-generated

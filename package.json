@@ -1,0 +1,46 @@
+{
+  "name": "koishi-plugin-anime-schedule",
+  "description": "番剧更新表与订阅提醒：每日 / 深夜档 / 本周 / 本季四张表，支持单部订阅",
+  "version": "1.0.0",
+  "main": "lib/index.js",
+  "typings": "lib/index.d.ts",
+  "files": [
+    "lib",
+    "readme.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "watch": "tsc -p tsconfig.json --watch",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "license": "MIT",
+  "keywords": [
+    "chatbot",
+    "koishi",
+    "anime",
+    "bangumi",
+    "bangumi-data",
+    "anilist",
+    "schedule",
+    "calendar",
+    "subscription"
+  ],
+  "peerDependencies": {
+    "koishi": "^4.18.0"
+  },
+  "dependencies": {
+    "@napi-rs/canvas": "^1.0.0",
+    "bangumi-data": "^0.3.228"
+  },
+  "koishi": {
+    "description": {
+      "zh": "番剧更新表与订阅提醒：每日 / 深夜档 / 本周 / 本季四张表，支持单部订阅"
+    },
+    "service": {
+      "required": [
+        "database",
+        "http"
+      ]
+    }
+  }
+}
