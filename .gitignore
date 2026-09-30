@@ -31,3 +31,6 @@ yarn-error.log
 *.ntvs*
 *.njsproj
 *.sln
+
+# npm 凭据，绝不能进仓库
+.npmrc
