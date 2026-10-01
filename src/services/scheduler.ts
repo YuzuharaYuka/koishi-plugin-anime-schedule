@@ -1,6 +1,6 @@
 import { h } from 'koishi'
 import type { Context, Logger } from 'koishi'
-import { DIGEST_LABELS } from '../constants'
+import { DIGEST_LABELS, getMessages } from '../constants'
 import type { Config } from '../config'
 import type { Digest, DigestItem, DigestKind, AnimeChannel } from '../types'
 import type { DigestService } from './digest'
@@ -274,14 +274,19 @@ export class Scheduler {
       }
 
       try {
+        // 与推送表同一套版式：首行时刻 + 集数，标题与提示各占一行
         const lines = fresh.map((item) => {
           const inMinutes = Math.max(0, Math.round((item.atMs - now) / 60000))
-          return `· ${item.time} ${item.name} (${item.episode})\n    还有约 ${inMinutes} 分钟开播`
+          const episode = item.recurring && item.episodeCount > 0
+            ? getMessages(this.config.locale).episodeUnit(item.episodeCount)
+            : ''
+          const lead = episode ? `${item.time} ${episode}` : item.time
+          return `${lead}\n  ${item.name}\n  还有约 ${inMinutes} 分钟开播`
         })
         const message = h.text([
           `即将开播 (${formatDate(now, this.config.timeZone)})`,
           ...lines,
-        ].join('\n'))
+        ].join('\n\n'))
 
         const bot = this.ctx.bots.find((entry) => entry.selfId === channel.botId)
         if (bot) await bot.sendMessage(channel.channelId, message)

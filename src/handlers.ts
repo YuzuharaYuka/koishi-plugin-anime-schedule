@@ -434,16 +434,18 @@ export async function commandNext(deps: HandlerContext, session: Session, daysTe
     const airings = await digest.upcomingAirings(rows.map((row) => row.tid), days)
     if (!airings.length) return `未来 ${days} 天内订阅的作品没有播出计划。`
 
-    const weekdayNames = getMessages(config.locale).weekdayNames
+    const messages = getMessages(config.locale)
     const lines: string[] = []
     let currentDate = ''
     for (const item of airings) {
       if (item.date !== currentDate) {
         currentDate = item.date
-        const weekday = weekdayNames[getLocalWeekday(getDayStartMs(item.date, digest.timeZone), digest.timeZone)] ?? ''
-        lines.push(`【${item.date} ${weekday}】`.trimEnd())
+        const weekday = messages.weekdayNames[getLocalWeekday(getDayStartMs(item.date, digest.timeZone), digest.timeZone)] ?? ''
+        // 分组标题前留一个空行，与推送表的分组观感一致
+        lines.push(`${lines.length ? '\n' : ''}【${item.date} ${weekday}】`.trimEnd())
       }
-      lines.push(`· ${item.time} ${truncate(item.name, 60)} (${item.episode})`)
+      const episode = item.recurring && item.episodeCount > 0 ? messages.episodeUnit(item.episodeCount) : ''
+      lines.push(`${episode ? `${item.time} ${episode}` : item.time}\n  ${truncate(item.name, 60)}`)
     }
 
     return [`未来 ${days} 天内订阅作品的播出计划:`, ...lines].join('\n')
