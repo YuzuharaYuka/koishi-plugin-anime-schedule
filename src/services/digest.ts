@@ -357,45 +357,28 @@ export class DigestService {
    * 这类作品（海螺小姐、樱桃小丸子、宝可梦 地平线、巧虎、战斗陀螺 X…）确实每周都在播，
    * 收录它们并不算错，但很多人不把它们当作「本季新番」，任其出现会让表格变得嘈杂。
    *
-   * AniList **没有**「长期番」专用标记，只能靠「话数失控」这个间接特征。判定分两种：
+   * 判据只有一条：**展示话数 ≥ 阈值**。长期连载番的本集数自然会涨得很高，而一季 12～24
+   * 话的当季番永远达不到阈值，因此不需要再引入别的条件。
    *
-   * 判据是 **`episodes` 为空**：AniList 对**有确定话数**的作品都会填 `episodes`，只有
-   * 「不确定何时完结」的无限连载番才一直留空。再叠加「展示话数 ≥ 阈值」，
-   * 当季番因此永远不会命中。
+   * 早先这里还叠加了「AniList 未给出总话数（`episodes === null`）」作为前提，但那条实际
+   * 上没有生效：大部分条目在闸门 2 之前就被筛掉，取不到 AniList 状态，于是「有状态」
+   * 这个前提直接为假，该剔的长期番反而漏剔（实测 `キラキラADらっこちゃん` 第 239 话、
+   * `ギャビーのドールハウス` 第 131 话都因此留在表里）。去掉它之后判据不再依赖网络，
+   * 行为更可预测，也不会再被限流影响。
    *
    * **必须在条目构建之后调用**：`applyAiringSchedule` 内部会按作品去重，去重前后的
    * 「第几话」可能不同。判据要落在**最终展示的话数**上。
    *
    * 阈值由 `content.longRunningThreshold` 决定，**默认 0 表示不过滤**。
-   *
-   * ## 已知覆盖不到的几类（刻意保守，不做猜测）
-   *
-   * - **没有 `aniListId`**：拿不到状态，无法判定（如 `ギャビーのドールハウス`，第 131 话）。
-   * - **连 Bangumi 条目 ID 都没有**：连索引条目都取不到（如 `キラキラADらっこちゃん`，第 239 话）。
-   * - **AniList 的总话数滞后**：AniList 只跟踪到某个「季度」就停更，`episodes` 停在较小的
-   *   值而实际话数早已超过（实测 `コアラ絵日記`、`デジモンBEATBREAK` 都是 `episodes=49`
-   *   但已播到第 53 话）。曾试过「展示话数 > episodes」这条补强，但无法稳定生效
-   *   （状态表在限流时可能缺项），因此不做——宁可漏剔也不误杀。
    */
-  private dropLongRunning(items: DigestItem[], candidates: AirCandidate[], states: Map<number, AiringState>): DigestItem[] {
+  private dropLongRunning(items: DigestItem[]): DigestItem[] {
     const threshold = this.config.content.longRunningThreshold
     if (!threshold || threshold <= 0) return items
-
-    // 条目只带 tid，这里按 tid 找回索引条目
-    const entryOfTid = new Map<string, IndexEntry>()
-    for (const candidate of candidates) {
-      const tid = defaultTidOf(candidate.entry) ?? candidate.entry.key
-      if (!entryOfTid.has(tid)) entryOfTid.set(tid, candidate.entry)
-    }
 
     const kept: DigestItem[] = []
     const dropped: string[] = []
     for (const item of items) {
-      const entry = entryOfTid.get(item.tid)
-      const state = entry ? this.airingStateOf(entry, states) : undefined
-      // 只有「AniList 明确不给总话数」才算无限连载
-      const openEnded = state !== undefined && state.episodes === null
-      if (openEnded && item.episodeCount >= threshold) {
+      if (item.episodeCount >= threshold) {
         if (dropped.length < 12) dropped.push(`${item.name}(第${item.episodeCount}话)`)
         continue
       }
@@ -403,7 +386,7 @@ export class DigestService {
     }
     if (dropped.length) {
       debugLog(
-        '[digest] 剔除超长期连载番 %d 部（话数失控且第 %d 话以上）: %s',
+        '[digest] 剔除超长期连载番 %d 部（第 %d 话以上）: %s',
         items.length - kept.length,
         threshold,
         dropped.join('、'),
@@ -1036,7 +1019,7 @@ export class DigestService {
     // 「第几话」可能不是同一个值（同一部作品在窗口内有多场时，保留的那一场未必是话数最大
     // 的那一场）。判据要落在**最终展示的话数**上，否则会出现「明明显示第 53 话却按第 49
     // 话判定」这种错位，导致该剔的没剔掉。
-    const items = this.dropLongRunning(built, concluded, airingStates)
+    const items = this.dropLongRunning(built)
 
     return this.finish(
       kind,
