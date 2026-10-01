@@ -52,7 +52,7 @@ npm i koishi-plugin-anime-schedule
 | `push.dailyTime` 等 | 见配置页 | 四种推送各自的开关与时刻 |
 | `push.updateLookaheadMinutes` | `30` | 订阅作品提前多少分钟提醒 |
 | `content.maxItems` | `0` | 单次推送最多显示多少部，`0` 为不限制 |
-| `content.longRunningThreshold` | `0` | 剔除长期连载番的话数阈值，`0` 为不过滤。展示话数达到该值的作品不显示；填 `64` 可滤掉海螺小姐、宝可梦 地平线这类周更多年的作品 |
+| `content.longRunningThreshold` | `0` | 剔除长期连载番的话数阈值，`0` 为不过滤 |
 | `output.format` | `image` | `image` / `text` |
 | `output.layout` | `table` | 图片排版：`table` / `list` |
 | `localize.titleStyle` | `localized` | `localized` 仅中文 / `both` 中文（日文原名）/ `original` 仅日文原名 |

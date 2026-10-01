@@ -136,9 +136,7 @@ export const Config: Schema<Config> = Schema.intersect([
         .default(0),
       longRunningThreshold: Schema.number()
         .min(0).step(1)
-        .description('剔除长期连载番的话数阈值，0 为不过滤。'
-          + '展示话数达到该值的作品整条不显示——海螺小姐、宝可梦 地平线这类周更多年的作品'
-          + '话数会一直涨，而一季 12～24 话的当季番永远达不到，所以填 64 这类值即可')
+        .description('剔除长期连载番的话数阈值，0 为不过滤')
         .default(0),
     }),
   }).description('推送内容'),
