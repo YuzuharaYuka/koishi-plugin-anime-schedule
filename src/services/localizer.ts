@@ -24,7 +24,7 @@ interface BangumiSubject {
   eps?: number
   total_episodes?: number
   images: { large?: string; common?: string } | null
-  rating: { score?: number; total?: number } | null
+  rating: { score?: number; total?: number; count?: Record<string, number> } | null
 }
 
 /**
@@ -39,6 +39,41 @@ function resolveEpisodeTotal(subject: BangumiSubject): number | null {
   const eps = Number(subject.eps)
   if (Number.isFinite(eps) && eps > 0) return eps
   return null
+}
+
+/**
+ * 算评分，保留两位小数。
+ *
+ * **不用 `rating.score`**：Bangumi 只把它保留一位小数（实测 60 个条目里带两位小数的为 0），
+ * 直接拿来显示，第二位永远是 0，没有信息量。API 同时给了 `rating.count`
+ * （1~10 各分数段的人数），据此算**算术平均**即可拿到真实精度：
+ *
+ * ```
+ * 至高之力    score=6.1  count 平均=6.0833
+ * 药屋第三季  score=7.3  count 平均=7.3231
+ * 药屋第一季  score=7.5  count 平均=7.4764
+ * ```
+ *
+ * 与网站显示的关系：四舍五入到一位后与 `score` 一致（`6.0833 → 6.1`、`7.3231 → 7.3`），
+ * 因此不会出现「插件和网站对不上」的观感，只是多给了两位真实精度。
+ *
+ * `count` 缺失（老条目或没投票）时退回 `score`；两者都没有则返回 null。
+ */
+function computeScore(rating: BangumiSubject['rating']): number | null {
+  const count = rating?.count
+  if (count && typeof count === 'object') {
+    let sum = 0
+    let votes = 0
+    for (const [key, value] of Object.entries(count)) {
+      const score = Number(key)
+      const people = Number(value)
+      if (!Number.isFinite(score) || !Number.isFinite(people) || people <= 0) continue
+      sum += score * people
+      votes += people
+    }
+    if (votes > 0) return Math.round((sum / votes) * 100) / 100
+  }
+  return typeof rating?.score === 'number' ? rating.score : null
 }
 
 /**
@@ -153,13 +188,33 @@ export class Localizer {
     await this.flush()
   }
 
-  private isFresh(entry: LocalizeCacheEntry): boolean {
-    // 「不存在」也是有效结果：同一季内不必反复去问一个不会出现的条目
-    if (entry.missing) return Date.now() - entry.cachedAt < this.config.localize.cacheTtlDays * 24 * 60 * 60 * 1000
-    // 取过条目详情、却没取逐集档期（本季表与检索这两条路径会这样），
-    // 而完结判定需要逐集档期时，必须重新取一次而不是当作新鲜数据用。
+  /**
+   * 这一条缓存是否还够用。
+   *
+   * 拆成「标题封面」与「评分」两个保质期，因为两者变化速度差很多：
+   *
+   * - **标题与封面**几乎不变，用 `cacheTtlDays`（默认 30 天）；
+   * - **评分**在新番开播头几周天天在变（样本量从个位数涨到几百），用 `scoreTtlHours`
+   *   （默认 24 小时）。早先两者共用 30 天，导致「只有 1 个人投票」时的 7.0 被当成
+   *   评分显示整整一个月，而网站早已是 6.1。
+   *
+   * @param wantEpisodeTimes 调用方这次是否需要逐集档期。需要时，缺档期的条目即使标题
+   *   还新鲜也得重取一次；不需要时（本季表、检索这类纯展示路径）就不为它白跑请求。
+   */
+  private isFresh(entry: LocalizeCacheEntry, wantEpisodeTimes: boolean): boolean {
+    if (entry.missing) {
+      // 「不存在」也是有效结果：同一季内不必反复去问一个不会出现的条目
+      return Date.now() - entry.cachedAt < this.config.localize.cacheTtlDays * 24 * 60 * 60 * 1000
+    }
+
+    // 取过条目详情、却没取逐集档期，而这次需要档期 → 必须重取。
     // 旧版缓存没有 hasEpisodeTimes 字段，按「取过」处理。
-    if (entry.hasEpisodeTimes === false) return false
+    if (wantEpisodeTimes && entry.hasEpisodeTimes === false) return false
+
+    // 评分单独算保质期：到期就重取详情，但重取时仍按调用方的需要决定要不要连档期一起取
+    const scoreAt = entry.scoreCachedAt ?? entry.cachedAt
+    if (Date.now() - scoreAt >= this.config.localize.scoreTtlHours * 60 * 60 * 1000) return false
+
     return Date.now() - entry.cachedAt < this.config.localize.cacheTtlDays * 24 * 60 * 60 * 1000
   }
 
@@ -179,6 +234,8 @@ export class Localizer {
     await this.load()
 
     const wanted: number[] = []
+    /** 这次要重取的条目里，缓存中已有的那一份；用于判断是否还需要补逐集档期 */
+    const previous = new Map<number, LocalizeCacheEntry>()
     const seen = new Set<number>()
     for (const id of ids) {
       if (!Number.isFinite(id) || seen.has(id)) continue
@@ -190,15 +247,24 @@ export class Localizer {
       }
       // 过期条目也先返回，避免一次请求失败就让整张表掉封面
       result.set(id, cached)
-      if (!this.isFresh(cached)) wanted.push(id)
+      if (!this.isFresh(cached, wantEpisodeTimes)) {
+        wanted.push(id)
+        previous.set(id, cached)
+      }
     }
     if (!wanted.length) return result
 
     const started = Date.now()
     const looked = await mapLimit(wanted, LOCALIZE_CONCURRENCY, async (id) => {
+      const stale = previous.get(id)
+      // 逐集档期只在「调用方要」且「有正规集数」时才值得请求：用它拿首末集日期。
+      //
+      // 已经取过档期的条目**不重复取**——评分每天刷新，而档期是另一笔请求，
+      // 跟着一起重发会让请求量凭空翻倍（周表 77 部就是多 77 个请求）。
+      // 只有「没取过」或「这次确实缺它」才补。
+      const needsTimes = wantEpisodeTimes && !(stale && stale.hasEpisodeTimes !== false)
       const subject = await this.fetchSubject(id)
-      // 逐集档期只在「调用方要」且「有正规集数」时才值得请求：用它拿首末集日期
-      const times = wantEpisodeTimes && subject && resolveEpisodeTotal(subject)
+      const times = needsTimes && subject && resolveEpisodeTotal(subject)
         ? await this.fetchEpisodeTimes(id)
         : null
       return { id, subject, times }
@@ -208,18 +274,24 @@ export class Localizer {
     for (const { id, subject, times } of looked) {
       if (!subject) continue
       ok++
+      const stale = previous.get(id)
+      // 这次没重新取档期（评分刷新）时，沿用上一次的结果，别把它当「没有档期」
+      const hasTimes = times !== null || stale?.hasEpisodeTimes === true
       const entry: LocalizeCacheEntry = {
         subjectId: subject.id,
         title: subject.name_cn?.trim() || subject.name,
         coverUrl: subject.images?.large ?? subject.images?.common ?? '',
-        score: typeof subject.rating?.score === 'number' ? subject.rating.score : null,
+        score: computeScore(subject.rating),
         ratingTotal: typeof subject.rating?.total === 'number' ? subject.rating.total : null,
         totalEpisodes: resolveEpisodeTotal(subject),
-        hasEpisodeTimes: times !== null,
-        firstAirMs: times?.first ?? null,
-        lastAirMs: times?.last ?? null,
+        hasEpisodeTimes: hasTimes,
+        firstAirMs: times?.first ?? stale?.firstAirMs ?? null,
+        lastAirMs: times?.last ?? stale?.lastAirMs ?? null,
         airDate: subject.date ?? null,
-        cachedAt: Date.now(),
+        // `cachedAt` 只在真的取全（含档期）时推进，否则标题封面的 30 天保质期会被
+        // 每天一次的评分刷新无限续期，等于永远不校验
+        cachedAt: times !== null || !stale ? Date.now() : stale.cachedAt,
+        scoreCachedAt: Date.now(),
       }
       this.memory.set(id, entry)
       this.scheduleFlush()

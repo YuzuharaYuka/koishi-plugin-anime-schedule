@@ -91,6 +91,14 @@ export const LOCALIZE_CACHE_FILE = 'localize-cache.json'
  * v6：新增 `hasEpisodeTimes`。逐集档期不再是每条必取，需要靠它区分
  *     「没取过逐集档期」与「取过但没有集数日期」。
  */
+/**
+ * 评分与评价人数的缓存小时数。
+ *
+ * 比标题封面的 cacheTtlDays 短得多：新番开播头几周评分天天在变，样本量从个位数
+ * 涨到几百，用 30 天缓存会一直显示「只有十几个人投票」时的噪声值。
+ */
+export const DEFAULT_SCORE_TTL_HOURS = 24
+
 export const LOCALIZE_CACHE_VERSION = 6
 
 /** 本地化缓存最大条目数，超出后按写入时间淘汰最旧的一半 */

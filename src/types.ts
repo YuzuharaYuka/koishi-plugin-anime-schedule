@@ -81,8 +81,26 @@ export interface LocalizeCacheEntry {
   /** 中文名，缺失时回落为日文原名 */
   title: string
   coverUrl: string
+  /**
+   * 评分，两位小数。
+   *
+   * 由 `rating.count`（各分数段人数）算出的**算术平均**，而不是 Bangumi 直接给的
+   * `rating.score`——后者只保留一位小数（实测 60 个条目里带两位小数的为 0），
+   * 自己算才有第二位。四舍五入到一位后与网站显示一致，不会造成「对不上」的观感。
+   * `rating.count` 缺失时退回 `rating.score`。
+   */
   score: number | null
   ratingTotal: number | null
+  /**
+   * 评分与 `ratingTotal` 的取回时刻。
+   *
+   * 与 `cachedAt` 分开，因为两者保质期差很多：标题与封面几乎不变（`cacheTtlDays`，
+   * 默认 30 天），而**新番的评分在开播头几周会剧烈变化**（样本量从个位数涨到几百），
+   * 用 30 天缓存会一直显示「只有十几个人投票」时的噪声值。见 `localize.scoreTtlHours`。
+   *
+   * 旧缓存没有这个字段，按 `cachedAt` 处理（即可能立刻被刷新一次）。
+   */
+  scoreCachedAt?: number
   /**
    * Bangumi 给出的总集数，仅作缓存留档。
    *

@@ -888,7 +888,9 @@ export class DigestService {
       // 取不到（无 aniListId、没查到状态、或那条没给图）时回退 Bangumi。
       coverUrl: aniList?.coverUrl || (entry.bangumiId !== null ? (subject?.coverUrl ?? '') : ''),
       scoreValue,
-      score: scoreValue !== null ? scoreValue.toFixed(1) : '',
+      // 两位小数：`score` 由 `rating.count` 算出的算术平均得来（见 `LocalizeCacheEntry.score`），
+      // 比 Bangumi 自己给的一位小数更有区分度；四舍五入到一位后与网站显示一致
+      score: scoreValue !== null ? scoreValue.toFixed(2) : '',
       firstYear: firstDate ? Number(firstDate.slice(0, 4)) : null,
       firstMonth: firstDate ? Number(firstDate.slice(5, 7)) : null,
       subscribed: entry.bangumiId !== null && subscribed.has(`bgm:${entry.bangumiId}`),

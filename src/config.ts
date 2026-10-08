@@ -1,5 +1,5 @@
 import { Schema } from 'koishi'
-import { COVER_CONCURRENCY, DEFAULT_FONT_FAMILY, DEFAULT_JPEG_QUALITY } from './constants'
+import { COVER_CONCURRENCY, DEFAULT_FONT_FAMILY, DEFAULT_JPEG_QUALITY, DEFAULT_SCORE_TTL_HOURS } from './constants'
 import type { DigestFormat, ImageLayout, PluginLocale, TimeZone, TitleStyle } from './types'
 import { resolveTimeZone } from './utils/time'
 
@@ -42,7 +42,10 @@ export interface Config {
   localize: {
     enabled: boolean
     titleStyle: TitleStyle
+    /** 标题与封面的缓存天数 */
     cacheTtlDays: number
+    /** 评分与评价人数的缓存小时数 */
+    scoreTtlHours: number
     /** 播出状态（是否已完结）的缓存有效期，单位小时 */
     airingTtlHours: number
   }
@@ -179,9 +182,14 @@ export const Config: Schema<Config> = Schema.intersect([
       ])
         .description('标题展示方式')
         .default('localized'),
+      scoreTtlHours: Schema.number()
+        .min(1).step(1)
+        .description('评分与评价人数的缓存小时数。新番开播头几周评分天天在变，'
+          + '因此单独给一个比标题封面短得多的保质期')
+        .default(DEFAULT_SCORE_TTL_HOURS),
       cacheTtlDays: Schema.number()
         .min(1).step(1)
-        .description('标题、封面与评分的缓存天数')
+        .description('标题与封面的缓存天数')
         .default(30),
       airingTtlHours: Schema.number()
         .min(1).step(1)
@@ -279,6 +287,7 @@ export function normalizeConfig(config: Config): Config {
     localize: {
       ...config.localize,
       cacheTtlDays: int(config.localize?.cacheTtlDays, 30, 1),
+      scoreTtlHours: int(config.localize?.scoreTtlHours, DEFAULT_SCORE_TTL_HOURS, 1),
       airingTtlHours: int(config.localize?.airingTtlHours, 6, 1),
     },
     render: {
