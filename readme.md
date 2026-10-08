@@ -57,6 +57,7 @@ npm i koishi-plugin-anime-schedule
 | `output.layout` | `table` | 图片排版：`table` / `list` |
 | `localize.titleStyle` | `localized` | `localized` 仅中文 / `both` 中文（日文原名）/ `original` 仅日文原名 |
 | `localize.scoreTtlHours` | `24` | 评分与评价人数的缓存小时数。新番开播头几周评分天天在变，因此单独给一个较短的保质期 |
+| `output.showScore` | `true` | 是否显示 Bangumi 评分。评价人数少于 10 人时一律不显示——样本太少的分数会误导人 |
 | `render.jpegQuality` | `100` | 图片编码质量，调低可减小体积 |
 | `advanced.debug` | `false` | 输出调试日志 |
 

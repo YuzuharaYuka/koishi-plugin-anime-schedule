@@ -99,6 +99,15 @@ export const LOCALIZE_CACHE_FILE = 'localize-cache.json'
  */
 export const DEFAULT_SCORE_TTL_HOURS = 24
 
+/**
+ * 显示评分所需的最少评价人数。
+ *
+ * 低于这个数就不显示评分：新番刚开播时可能只有一两个人投票，那个数字会随着样本增加
+ * 剧烈变化（实测至高之力 1 票时是 7.0，156 票时是 6.1）。宁可留空，也不要给读者一个
+ * 会误导人的数字。
+ */
+export const MIN_SCORE_VOTES = 10
+
 export const LOCALIZE_CACHE_VERSION = 6
 
 /** 本地化缓存最大条目数，超出后按写入时间淘汰最旧的一半 */

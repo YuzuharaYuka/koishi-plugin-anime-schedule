@@ -9,7 +9,7 @@ import type {
   DigestKind,
   LocalizeCacheEntry,
 } from '../types'
-import { LATE_NIGHT_END_HOUR, getMessages } from '../constants'
+import { LATE_NIGHT_END_HOUR, MIN_SCORE_VOTES, getMessages } from '../constants'
 import type { AiringState, ScheduledEpisode } from '../types'
 import type { AiringStatusService } from './airing'
 import { Localizer } from './localizer'
@@ -740,7 +740,6 @@ export class DigestService {
       const total = entry?.totalEpisodes ?? 0
       const stated = entry?.lastAirMs ?? null
       if (stated === null || total <= 0 || base === null) return true
-
       // 上游数据错配校验：`begin` 与逐集档期的首集相差数年时，这个条目的开播日期是错的。
       //
       // 实例：《仙王的日常生活 第四季》在 bangumi-data 里 `begin` 被写成 2026-07-01，
@@ -814,6 +813,34 @@ export class DigestService {
   }
 
   /**
+   * 只为「闸门 3 真的要判」的作品取详情。
+   *
+   * 闸门 3 的第一件事就是跳过 AniList 已确认同季的条目，因此那部分详情取来也用不上。
+   * 这里用**同一套短路条件**先筛一遍，避免为它们白跑 `/v0/episodes`。
+   *
+   * 条件必须与 `dropFinishedByEpisodeDates` 里的短路保持一致，否则会出现
+   * 「这里不取、那里要用」的空判定。
+   */
+  private async subjectsForEpisodeDates(
+    candidates: AirCandidate[],
+    airing?: Map<number, AiringState>,
+  ): Promise<Map<number, LocalizeCacheEntry>> {
+    const wanted = candidates.filter((candidate) => {
+      const state = candidate.entry.aniListId === null ? undefined : airing?.get(candidate.entry.aniListId)
+      // AniList 已表态（同一季）→ 闸门 3 不参与，详情不必取
+      return !(state && this.isSameAniListSeason(state, candidate.entry.broadcastMs))
+    })
+    if (wanted.length === candidates.length) return this.subjectsOf(candidates)
+    const subjects = await this.subjectsOf(wanted)
+    debugLog(
+      '[digest] 闸门 3：%d 部幸存者中只有 %d 部需要 Bangumi 逐集档期（其余由 AniList 定论）',
+      candidates.length,
+      wanted.length,
+    )
+    return subjects
+  }
+
+  /**
    * 推算某部作品在 `fromMs` 之后的下一场播出。
    *
    * 一次性放送（特别篇、剧场版、整季一次放出）没有周期可递推，直接返回它自己的
@@ -866,8 +893,13 @@ export class DigestService {
       : style === 'localized' ? localized
         : localized === original ? original : `${localized} (${original})`
 
+    // 样本太少时评分没有参考价值：新番刚开播时可能只有一两个人投票，那个数字会随着
+    // 样本增加剧烈变化（实测至高之力 1 票时是 7.0，156 票时是 6.1）。宁可留空也不要
+    // 给读者一个会误导人的数字。
+    const votes = subject?.ratingTotal ?? 0
     const scoreValue = this.localizer.enabled && output.showScore
       && typeof subject?.score === 'number' && subject.score > 0
+      && votes >= MIN_SCORE_VOTES
       ? subject.score
       : null
     const time = formatClock(candidate.atMs, this.timeZone)
@@ -1009,10 +1041,21 @@ export class DigestService {
     const airingStates = await this.airingStatesOf(locallyKept)
     const survived = this.dropFinishedByAniList(locallyKept, options.fromMs, airingStates)
 
-    // ── 闸门 3：只对幸存者取 Bangumi 详情与逐集档期 ──
-    const subjects = await this.subjectsOf(survived)
-    const concluded = this.dropFinishedByEpisodeDates(survived, options.fromMs, subjects, airingStates)
+    // ── 闸门 3：只为**真正要判的**作品取 Bangumi 详情 ──
+    //
+    // 闸门 3 一开头就短路「AniList 已确认同季」的条目，这类占了绝大多数——实测周表
+    // 77 部幸存者里只有 13 部真要看逐集档期。早先无条件给全部幸存者取详情，等于为
+    // 60 多部白跑请求。这里先算出真正需要的 ID，只取它们。
+    const concluded = this.dropFinishedByEpisodeDates(
+      survived,
+      options.fromMs,
+      await this.subjectsForEpisodeDates(survived, airingStates),
+      airingStates,
+    )
 
+    // 展示用的详情（标题、封面、评分）另行批量取：闸门 3 里取过的会命中缓存，
+    // 没取过的才发请求，因此不会重复。
+    const subjects = await this.subjectsOf(concluded)
     const scheduled = this.applyAiringSchedule(concluded, airingStates, options)
     const built = await this.buildItems(scheduled, subscribed, subjects, airingStates)
     // 可选：剔除超长期番（默认关闭，见 `content.longRunningThreshold`）。
@@ -1306,8 +1349,14 @@ export class DigestService {
     const locallyKept = this.dropLocallyFinished(candidates, startMs, following)
     const airingStates = await this.airingStatesOf(locallyKept)
     const survived = this.dropFinishedByAniList(locallyKept, startMs, airingStates)
-    const subjects = await this.subjectsOf(survived)
-    const airing = this.dropFinishedByEpisodeDates(survived, startMs, subjects, airingStates)
+    // 与 `buildAirings` 同一套做法：只为闸门 3 真正要判的作品取详情
+    const airing = this.dropFinishedByEpisodeDates(
+      survived,
+      startMs,
+      await this.subjectsForEpisodeDates(survived, airingStates),
+      airingStates,
+    )
+    const subjects = await this.subjectsOf(airing)
 
     const items = await this.buildItems(airing, wanted, subjects, airingStates)
     debugLog('[digest] 订阅排期: %d 条订阅 → 未来 %d 天内 %d 场', tids.length, days, items.length)
