@@ -163,7 +163,7 @@ export const Config: Schema<Config> = Schema.intersect([
         .description('单张图片最多加载多少张封面，0 为不限制')
         .default(0),
       showCover: Schema.boolean().description('显示封面').default(true),
-      showScore: Schema.boolean().description('显示评分').default(true),
+      showScore: Schema.boolean().description('显示评分，评价不足 10 人时不显示').default(true),
       useForward: Schema.boolean()
         .description('纯文本模式使用合并转发，避免刷屏')
         .default(true),
@@ -184,8 +184,7 @@ export const Config: Schema<Config> = Schema.intersect([
         .default('localized'),
       scoreTtlHours: Schema.number()
         .min(1).step(1)
-        .description('评分与评价人数的缓存小时数。新番开播头几周评分天天在变，'
-          + '因此单独给一个比标题封面短得多的保质期')
+        .description('评分缓存小时数')
         .default(DEFAULT_SCORE_TTL_HOURS),
       cacheTtlDays: Schema.number()
         .min(1).step(1)
