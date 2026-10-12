@@ -11,7 +11,7 @@ import {
 } from '../constants'
 import type { Config } from '../config'
 import type { LocalizeCacheEntry, LocalizeCacheFile } from '../types'
-import { debugLog, errorMessage, errorStatus, mapLimit, retryDelay, unwrapPayload } from '../utils'
+import { debugLog, errorMessage, errorStatus, mapLimit, unwrapPayload } from '../utils'
 import { HttpClient } from './network'
 
 /** Bangumi `GET /v0/subjects/{id}` 的响应中我们用到的字段 */
@@ -29,9 +29,7 @@ interface BangumiSubject {
 
 /**
  * 取条目的总集数，仅写入缓存留档。
- *
- * 连载中的条目只有 `eps`（预定集数），已完结的条目两者都会给，
- * 因此优先用 `total_episodes`，取不到再退回 `eps`。
+ * 已完结的条目两者都会给，因此优先 `total_episodes`，取不到再退回 `eps`。
  */
 function resolveEpisodeTotal(subject: BangumiSubject): number | null {
   const total = Number(subject.total_episodes)
@@ -44,20 +42,8 @@ function resolveEpisodeTotal(subject: BangumiSubject): number | null {
 /**
  * 算评分，保留两位小数。
  *
- * **不用 `rating.score`**：Bangumi 只把它保留一位小数（实测 60 个条目里带两位小数的为 0），
- * 直接拿来显示，第二位永远是 0，没有信息量。API 同时给了 `rating.count`
- * （1~10 各分数段的人数），据此算**算术平均**即可拿到真实精度：
- *
- * ```
- * 至高之力    score=6.1  count 平均=6.0833
- * 药屋第三季  score=7.3  count 平均=7.3231
- * 药屋第一季  score=7.5  count 平均=7.4764
- * ```
- *
- * 与网站显示的关系：四舍五入到一位后与 `score` 一致（`6.0833 → 6.1`、`7.3231 → 7.3`），
- * 因此不会出现「插件和网站对不上」的观感，只是多给了两位真实精度。
- *
- * `count` 缺失（老条目或没投票）时退回 `score`；两者都没有则返回 null。
+ * **不用 `rating.score`**：Bangumi 只保留一位小数。API 同时给了 `rating.count`（各分数段人数），
+ * 据此算**算术平均**即可拿到真实精度，四舍五入到一位后与网站显示一致；`count` 缺失时退回 `score`。
  */
 function computeScore(rating: BangumiSubject['rating']): number | null {
   const count = rating?.count
@@ -77,17 +63,8 @@ function computeScore(rating: BangumiSubject['rating']): number | null {
 }
 
 /**
- * 兼容不同的 http 适配器：Koishi 的 http 服务返回响应体本身，
- * 而直接使用 axios 的调用方会拿到完整的响应对象。
- */
-/**
- * 按 Bangumi 条目 ID 取作品详情。
- *
- * 这里**不做任何标题匹配**：bangumi-data 已经给出每部作品的 Bangumi 条目 ID，
- * 直接按 ID 请求即可拿到中文名、封面、评分与开播日，
- * 既没有误配风险，也不需要维护相似度阈值。
- *
- * 结果按「条目 ID → 详情」写入内存与磁盘缓存，命中缓存时不发任何请求。
+ * 按 Bangumi 条目 ID 取作品详情。这里**不做任何标题匹配**：bangumi-data 已给出每部作品的
+ * 条目 ID，直接按 ID 请求即可，没有误配风险。结果写入内存与磁盘缓存，命中缓存时不发请求。
  */
 export class Localizer {
   private readonly memory = new Map<number, LocalizeCacheEntry>()
@@ -189,17 +166,10 @@ export class Localizer {
   }
 
   /**
-   * 这一条缓存是否还够用。
+   * 这一条缓存是否还够用。标题封面与评分分开计保质期：前者几乎不变（`cacheTtlDays`），后者在
+   * 新番开播头几周天天在变（`scoreTtlHours`）。
    *
-   * 拆成「标题封面」与「评分」两个保质期，因为两者变化速度差很多：
-   *
-   * - **标题与封面**几乎不变，用 `cacheTtlDays`（默认 30 天）；
-   * - **评分**在新番开播头几周天天在变（样本量从个位数涨到几百），用 `scoreTtlHours`
-   *   （默认 24 小时）。早先两者共用 30 天，导致「只有 1 个人投票」时的 7.0 被当成
-   *   评分显示整整一个月，而网站早已是 6.1。
-   *
-   * @param wantEpisodeTimes 调用方这次是否需要逐集档期。需要时，缺档期的条目即使标题
-   *   还新鲜也得重取一次；不需要时（本季表、检索这类纯展示路径）就不为它白跑请求。
+   * @param wantEpisodeTimes 需要逐集档期时，缺档期的条目即使标题还新鲜也得重取一次。
    */
   private isFresh(entry: LocalizeCacheEntry, wantEpisodeTimes: boolean): boolean {
     if (entry.missing) {
@@ -207,11 +177,10 @@ export class Localizer {
       return Date.now() - entry.cachedAt < this.config.localize.cacheTtlDays * 24 * 60 * 60 * 1000
     }
 
-    // 取过条目详情、却没取逐集档期，而这次需要档期 → 必须重取。
-    // 旧版缓存没有 hasEpisodeTimes 字段，按「取过」处理。
+    // 取过条目详情、却没取逐集档期，而这次需要档期 → 必须重取。旧版缓存没有 hasEpisodeTimes 字段，按「取过」处理。
     if (wantEpisodeTimes && entry.hasEpisodeTimes === false) return false
 
-    // 评分单独算保质期：到期就重取详情，但重取时仍按调用方的需要决定要不要连档期一起取
+    // 评分单独算保质期：到期就重取详情，重取时仍按调用方的需要决定要不要连档期一起取
     const scoreAt = entry.scoreCachedAt ?? entry.cachedAt
     if (Date.now() - scoreAt >= this.config.localize.scoreTtlHours * 60 * 60 * 1000) return false
 
@@ -219,14 +188,12 @@ export class Localizer {
   }
 
   /**
-   * 批量取回条目详情，返回「条目 ID → 详情」。
+   * 批量取回条目详情，返回「条目 ID → 详情」。未命中的条目不会出现在结果里，调用方按
+   * 「取不到就退化为日文原名」处理。
    *
-   * 未命中的条目不会出现在结果里；调用方按「取不到就退化为日文原名」处理。
-   *
-   * @param wantEpisodeTimes 是否顺带取逐集档期。只有「判断是否已播完」与「校准订正表
-   *   since」需要它，而它是一个额外请求（`/v0/episodes`）。本季表与关键词检索只展示
-   *   首播时刻与封面评分，因此传 `false`：当季 82 部能因此少发 82 个请求。
-   *   跳过的条目会在缓存里标记 `hasEpisodeTimes: false`，日后真有需要时会自动补取。
+   * @param wantEpisodeTimes 是否顺带取逐集档期（额外请求 `/v0/episodes`）。本季表与检索只展示
+   *   首播时刻与封面评分，传 `false` 可省掉每部一个请求；跳过的条目在缓存里标记
+   *   `hasEpisodeTimes: false`，日后真有需要时会自动补取。
    */
   async localizeByIds(ids: number[], wantEpisodeTimes = true): Promise<Map<number, LocalizeCacheEntry>> {
     const result = new Map<number, LocalizeCacheEntry>()
@@ -259,9 +226,8 @@ export class Localizer {
       const stale = previous.get(id)
       // 逐集档期只在「调用方要」且「有正规集数」时才值得请求：用它拿首末集日期。
       //
-      // 已经取过档期的条目**不重复取**——评分每天刷新，而档期是另一笔请求，
-      // 跟着一起重发会让请求量凭空翻倍（周表 77 部就是多 77 个请求）。
-      // 只有「没取过」或「这次确实缺它」才补。
+      // 已经取过档期的条目**不重复取**——评分每天刷新，而档期是另一笔请求，跟着一起重发
+      // 会让请求量凭空翻倍。只有「没取过」或「这次确实缺它」才补。
       const needsTimes = wantEpisodeTimes && !(stale && stale.hasEpisodeTimes !== false)
       const subject = await this.fetchSubject(id)
       const times = needsTimes && subject && resolveEpisodeTotal(subject)
@@ -288,8 +254,8 @@ export class Localizer {
         firstAirMs: times?.first ?? stale?.firstAirMs ?? null,
         lastAirMs: times?.last ?? stale?.lastAirMs ?? null,
         airDate: subject.date ?? null,
-        // `cachedAt` 只在真的取全（含档期）时推进，否则标题封面的 30 天保质期会被
-        // 每天一次的评分刷新无限续期，等于永远不校验
+        // `cachedAt` 只在真的取全（含档期）时推进，否则标题封面的保质期会被每天一次的
+        // 评分刷新无限续期，等于永远不校验
         cachedAt: times !== null || !stale ? Date.now() : stale.cachedAt,
         scoreCachedAt: Date.now(),
       }
@@ -320,16 +286,12 @@ export class Localizer {
   }
 
   /**
-   * 取该条目的首集与末集播出时刻（`airdate` 是 JST 日期，这里按日本时间 0 点算）。
+   * 取该条目的首集与末集播出时刻（`airdate` 是 JST 日期，按日本时间 0 点算）。
    *
-   * 这两个时刻是判断排期是否准确的两个锚点：
-   * - `lastAirMs` 用于判断「是否已播完」——bangumi-data 的 `end` 在当季条目上几乎为空，
-   *   而总集数只统计本季集数（长期番按季重置），拿它和累计集数比较必然误判；
-   * - `firstAirMs` 用于把订正表的 `since` 定死到真实首播那一天：站点的「周几」有时是
-   *   放送日标签、有时是日历日，光靠标签会算错一天。
-   *
-   * 因为只有上面两件事用得到，本方法是一个**额外请求**：调用方通过
-   * `localizeByIds(ids, false)` 明确表示不需要时就不发（见那里的说明）。
+   * `lastAirMs` 用于判断「是否已播完」（bangumi-data 的 `end` 在当季条目上几乎为空，而总集数
+   * 只统计本季集数）；`firstAirMs` 用于把订正表的 `since` 定死到真实首播那一天（站点的「周几」
+   * 有时是放送日标签、有时是日历日）。只有这两处用得到，因此它是**额外请求**：调用方传
+   * `localizeByIds(ids, false)` 时就不发。
    */
   private async fetchEpisodeTimes(id: number): Promise<{ first: number | null; last: number | null }> {
     const url = `${BANGUMI_API_HOST}/v0/episodes?subject_id=${id}&type=0&limit=${EPISODE_QUERY_LIMIT}`
@@ -351,55 +313,41 @@ export class Localizer {
   }
 
   /**
-   * 统一的请求 + 重试。
+   * 取一个条目的响应，把三种结果分开：拿到值、站点明确说「没有这个条目」（404）、其他失败。
    *
-   * 返回 `{ value, notFound }`：`value` 是响应体（不可用或失败时为 null），
-   * `notFound` 表示站点明确回答「没有这个条目」（404），调用方据此记负缓存。
-   * 两者分开是因为「失败」值得重试、「不存在」不值得——但都不该每次都重问一遍。
+   * 重试与退避已由 `HttpClient` 统一处理，这里只负责归类——404 要记负缓存，
+   * 而「失败」若也记进去，会把临时故障当成「条目不存在」缓存一整个 TTL。
    */
   private async request<T>(
     url: string,
     id: number,
     valid: (payload: T) => boolean,
   ): Promise<{ value: T | null; notFound: boolean }> {
-    const maxAttempt = Math.min(1, this.config.advanced.retries)
-    for (let attempt = 0; attempt <= maxAttempt; attempt++) {
-      try {
-        const raw = await this.http.get<unknown>(url, {
-          timeout: this.config.advanced.requestTimeout * 1000,
-        })
-        const payload = unwrapPayload(raw) as T | null
-        if (!payload || !valid(payload)) return { value: null, notFound: false }
-        return { value: payload, notFound: false }
-      } catch (error) {
-        const status = errorStatus(error)
-        // 404：条目不存在，重试没有意义，也不必再问
-        if (status === 404) {
-          debugLog('[localize] 条目 %d 在 Bangumi 上不存在 (404)', id)
-          return { value: null, notFound: true }
-        }
-        if (attempt < maxAttempt) {
-          const delay = retryDelay(attempt)
-          debugLog('[localize] 条目 %d 请求失败，%dms 后重试: %s', id, delay, errorMessage(error))
-          await new Promise<void>((resolve) => { this.ctx.setTimeout(() => resolve(), delay) })
-          continue
-        }
-        if (status === 429) this.logger.debug('[localize] 条目 %d 被限流 (%s)', id, status)
-        else {
-          this.logger.debug('[localize] 条目 %d 获取失败: %s', id, errorMessage(error))
-          this.http.hintOnFailure(error)
-        }
-        return { value: null, notFound: false }
+    try {
+      const raw = await this.http.get<unknown>(url, {
+        timeout: this.config.advanced.requestTimeout * 1000,
+      })
+      const payload = unwrapPayload(raw) as T | null
+      if (!payload || !valid(payload)) return { value: null, notFound: false }
+      return { value: payload, notFound: false }
+    } catch (error) {
+      const status = errorStatus(error)
+      if (status === 404) {
+        debugLog('[localize] 条目 %d 在 Bangumi 上不存在 (404)', id)
+        return { value: null, notFound: true }
       }
+      if (status === 429) this.logger.debug('[localize] 条目 %d 被限流 (%s)', id, status)
+      else {
+        this.logger.debug('[localize] 条目 %d 获取失败: %s', id, errorMessage(error))
+        this.http.hintOnFailure(error)
+      }
+      return { value: null, notFound: false }
     }
-    return { value: null, notFound: false }
   }
 
   /**
-   * 记下「这个条目在 Bangumi 上不存在」。
-   *
-   * 存成一条只有 `missing` 标记的缓存，`isFresh` 会按正常 TTL 认为它有效，
-   * 于是同一季内不再重复请求。到期后会自动重试一次——那时 Bangumi 可能已经建好条目。
+   * 记下「这个条目在 Bangumi 上不存在」：存成一条只有 `missing` 标记的缓存，`isFresh` 会按
+   * 正常 TTL 认为它有效，于是同一季内不再重复请求；到期后会自动重试一次。
    */
   private rememberMissing(id: number): void {
     this.memory.set(id, {

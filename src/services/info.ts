@@ -1,14 +1,36 @@
 import type { Context, Logger } from 'koishi'
-import { ANILIST_API_URL, BANGUMI_API_HOST } from '../constants'
+import {
+  ANILIST_API_URL,
+  ANILIST_BATCH_SIZE,
+  ANILIST_MIN_INTERVAL_MS,
+  BANGUMI_API_HOST,
+} from '../constants'
 import type { HttpClient } from './network'
 import type { Localizer } from './localizer'
-import { debugLog, errorMessage, unwrapPayload } from '../utils'
+import { debugLog, errorMessage, errorStatus, mapLimit, unwrapPayload } from '../utils'
+
+/** nime.info 里 AniList 状态的缓存时长；详情页的状态不需要秒级新鲜 */
+const INFO_ANILIST_TTL_MS = 10 * 60 * 1000
+
+/** 详情卡的取数并发。Bangumi 文档限 1 请求/秒，不宜更高 */
+export const INFO_FETCH_CONCURRENCY = 4
+
+/** AniList 收到 429/403 后的冷却时长，与 `airing.ts` 同策略 */
+const ANILIST_COOLDOWN_MS = 5 * 60 * 1000
+
+/** 等待若干毫秒；用于批次之间保持最小间隔 */
+function wait(ms: number): Promise<void> {
+  return new Promise((resolve) => { setTimeout(resolve, ms) })
+}
+
+/** AniList 状态的缓存键：有 ID 用 ID，否则退回标题 */
+function anilistKey(aniListId: number | string): string {
+  return typeof aniListId === 'number' ? `id:${aniListId}` : aniListId
+}
 
 /**
- * 单部作品的详情，供 `anime.info` 展示。
- *
- * 与 `DigestItem` 的区别：那个是「某一场播出」的条目，这里是**作品本身**，
- * 因此带上简介、标签、逐集进度这些只在详情页才有意义的信息。
+ * 单部作品的详情，供 `anime.info` 展示。与 `DigestItem`（「某一场播出」的条目）不同，这里是
+ * **作品本身**，因此带上简介、标签、逐集进度这些只在详情页才有意义的信息。
  */
 export interface SubjectInfo {
   /** Bangumi 条目 ID；从关键词查到而没有 ID 时为 null */
@@ -40,9 +62,7 @@ export interface SubjectInfo {
   /** 最终话播出日 `YYYY-MM-DD`，未知为 null */
   endDate: string | null
   /**
-   * 连载状态。
-   *
-   * 判定优先用 AniList（它对在播作品给 `RELEASING`），AniList 没有时按首末集日期推算。
+   * 连载状态。判定优先用 AniList（它对在播作品给 `RELEASING`），AniList 没有时按首末集日期推算。
    */
   status: 'airing' | 'finished' | 'upcoming' | 'unknown'
   /** 下一话的时刻（本地化文案）与话数，仅在连载中时有值 */
@@ -69,6 +89,9 @@ interface BgmSubject {
   type?: number
 }
 
+/** 详情卡最多展示几个题材标签 */
+const MAX_TAGS = 10
+
 /** Bangumi `/v0/episodes` 的响应 */
 interface BgmEpisodes {
   total?: number
@@ -90,16 +113,23 @@ const RELEASING = 'RELEASING'
 /**
  * 单部作品的详情查询。
  *
- * 与 `DigestService` 分开是因为它服务于**交互式查询**（用户主动查一部），
- * 而推送表走的是批量路径，两者的取数策略不同：这里只取一部，值得发
- * `/v0/subjects/{id}` + `/v0/episodes` + 一次 AniList 查询。
- *
- * ## 为什么逐集档期值得单独取
- *
- * 它是第三个请求，但换来的信息只在详情里有意义：**已播到第几话**、**最终话是哪天**。
- * 推送表可以靠推算，而用户主动查一部时，"播完了没有""还剩几话"正是最想知道的。
+ * 与 `DigestService` 分开是因为它服务于**交互式查询**：这里只取一部，值得发
+ * `/v0/subjects/{id}` + `/v0/episodes` + 一次 AniList 查询——逐集档期换来的「已播到第几话」与
+ * 「最终话是哪天」只在详情里有意义。
  */
 export class InfoService {
+  /**
+   * 按标题缓存的 AniList 状态。
+   *
+   * 详情卡每次查询都要问一次 AniList，而它是全流程最慢、最容易触发限流的一环
+   * （`anime.info <关键词>` 一次可能问几十部）。缓存按标题而不是条目 ID 键控，
+   * 因为 AniList 那侧只有标题可查。
+   */
+  private readonly aniListCache = new Map<string, { at: number; state: AniListState | null }>()
+
+  /** AniList 判定超限后的冷却截止时刻，与 `airing.ts` 同一策略 */
+  private aniListCooldownUntil = 0
+
   constructor(
     private ctx: Context,
     private logger: Logger,
@@ -112,16 +142,73 @@ export class InfoService {
   /**
    * 查一部作品。
    *
+   * 条目详情必须最先取（拿不到就直接返回），其余两个数据源互相独立，并发请求：
+   * 串行时单部约 1.6s，并发后取决于最慢的一个。
+   *
    * @param bgmId Bangumi 条目 ID，由调用方从搜索索引里取得
+   * @param subscribed 是否已在订阅列表里
+   * @param aniListId 索引里记录的 AniList ID；给出时按 ID 精确查询，省掉一次标题搜索
    */
-  async fetch(bgmId: number, subscribed = false): Promise<SubjectInfo | null> {
+  async fetch(bgmId: number, subscribed = false, aniListId: number | null = null): Promise<SubjectInfo | null> {
     const subject = await this.fetchSubject(bgmId)
     if (!subject) return null
 
-    const episodes = await this.fetchEpisodes(bgmId)
-    const state = await this.fetchAniListState(subject.name)
+    const [episodes, state] = await Promise.all([
+      this.fetchEpisodes(bgmId),
+      this.fetchAniListState(subject.name, aniListId),
+    ])
 
     return this.build(subject, episodes, state, subscribed)
+  }
+
+  /**
+   * 批量把条目里的 AniList ID 解析成状态，供 `anime.info <关键词>` 一次性补齐。
+   *
+   * 与逐部 `fetch()` 的差别只在 AniList 这一环：ID 是既定的，可以按 `id_in` 一次问完
+   * （每批 `ANILIST_BATCH_SIZE` 个），而不是每部各搜一次标题——后者既慢又容易命中同名作品。
+   * 结果写入同一份缓存，随后逐部 `fetch()` 直接命中。
+   *
+   * @returns AniList ID → 状态；查不到的不在表内
+   */
+  async prefetchAniListStates(aniListIds: number[]): Promise<void> {
+    const wanted = [...new Set(aniListIds.filter((id) => Number.isFinite(id)))]
+      .filter((id) => {
+        const cached = this.aniListCache.get(anilistKey(id))
+        return !cached || Date.now() - cached.at >= INFO_ANILIST_TTL_MS
+      })
+    if (!wanted.length) return
+
+    for (let offset = 0; offset < wanted.length; offset += ANILIST_BATCH_SIZE) {
+      const batch = wanted.slice(offset, offset + ANILIST_BATCH_SIZE)
+      // 与 `airing.ts` 同步：AniList 限 30 次/分钟，批次之间留间隔，超限时冷却
+      if (offset > 0) await wait(ANILIST_MIN_INTERVAL_MS)
+      const query = `query ($ids: [Int]) {
+        Page(page: 1, perPage: ${batch.length}) {
+          media(id_in: $ids, type: ANIME) {
+            id
+            status episodes format
+            nextAiringEpisode { episode airingAt }
+            endDate { year month day }
+          }
+        }
+      }`
+      try {
+        const raw = await this.http.post<unknown>(ANILIST_API_URL, { query, variables: { ids: batch } })
+        const payload = unwrapPayload(raw) as { data?: { Page?: { media?: (AniListState & { id?: number })[] } } } | null
+        const media = payload?.data?.Page?.media ?? []
+        for (const item of media) {
+          if (Number.isFinite(item.id)) this.aniListCache.set(anilistKey(item.id as number), { at: Date.now(), state: item })
+        }
+        // 没返回的也记一笔，避免同一批里反复重问
+        for (const id of batch) {
+          if (!this.aniListCache.has(anilistKey(id))) this.aniListCache.set(anilistKey(id), { at: Date.now(), state: null })
+        }
+      } catch (error) {
+        debugLog('[info] AniList 批量查询 %d 个 ID 失败: %s', batch.length, errorMessage(error))
+        this.aniListCooldownUntil = Date.now() + ANILIST_COOLDOWN_MS
+        return
+      }
+    }
   }
 
   private async fetchSubject(id: number): Promise<BgmSubject | null> {
@@ -143,30 +230,51 @@ export class InfoService {
     }
   }
 
-  /** 按标题问一次 AniList，主要为了拿到在播状态与下一话时刻 */
-  private async fetchAniListState(title: string): Promise<AniListState | null> {
-    const query = `query ($search: String) {
-      Media(search: $search, type: ANIME) {
-        status episodes format
+  /**
+   * 取一部作品的 AniList 状态（在播状态与下一话时刻）。
+   *
+   * 有索引记录的 AniList ID 时按 ID 精确查询，否则退回按标题搜索——后者可能命中
+   * 同名的第 2 季或剧场版，只在索引没给 ID 时才用。
+   *
+   * 结果按「ID 或标题」缓存 `INFO_ANILIST_TTL_MS`，失败结果同样缓存，
+   * 避免限流期间反复重试把额度耗尽。
+   */
+  private async fetchAniListState(title: string, aniListId: number | null = null): Promise<AniListState | null> {
+    const key = aniListId === null ? title : anilistKey(aniListId)
+    const cached = this.aniListCache.get(key)
+    if (cached && Date.now() - cached.at < INFO_ANILIST_TTL_MS) return cached.state
+
+    const fields = `status episodes format
         nextAiringEpisode { episode airingAt }
-        endDate { year month day }
-      }
-    }`
+        endDate { year month day }`
+    const byId = aniListId !== null
+    const query = byId
+      ? `query ($id: Int) { Media(id: $id, type: ANIME) { ${fields} } }`
+      : `query ($search: String) { Media(search: $search, type: ANIME) { ${fields} } }`
+
+    let state: AniListState | null = null
     try {
-      const raw = await this.http.post<unknown>(ANILIST_API_URL, { query, variables: { search: title } })
-      // GraphQL 的响应体是 `{ data: { Media } }`，与 `airing.ts` 同样要下探两层
-      const payload = unwrapPayload(raw) as { data?: { Media?: AniListState } } | null
-      const media = payload?.data?.Media
-      if (!media) {
-        this.logger.warn('[info] AniList 未匹配到「%s」', title)
+      // 上一批刚被判超限，短时间内不再打，直接退化
+      if (Date.now() < this.aniListCooldownUntil) {
+        this.aniListCache.set(key, { at: Date.now(), state: null })
         return null
       }
-      return media
+      const raw = await this.http.post<unknown>(ANILIST_API_URL, {
+        query,
+        variables: byId ? { id: aniListId } : { search: title },
+      })
+      // GraphQL 的响应体是 `{ data: { Media } }`，与 `airing.ts` 同样要下探两层
+      const payload = unwrapPayload(raw) as { data?: { Media?: AniListState } } | null
+      state = payload?.data?.Media ?? null
+      if (!state) this.logger.warn('[info] AniList 未匹配到「%s」', title)
     } catch (error) {
       // AniList 取不到不影响主体信息，状态退化为按日期推算
       this.logger.warn('[info] AniList 查询「%s」失败: %s', title, errorMessage(error))
-      return null
+      const status = errorStatus(error)
+      if (status === 429 || status === 403) this.aniListCooldownUntil = Date.now() + ANILIST_COOLDOWN_MS
     }
+    this.aniListCache.set(key, { at: Date.now(), state })
+    return state
   }
 
   /** 把三份响应合成展示用的结构 */
@@ -205,11 +313,8 @@ export class InfoService {
   }
 
   /**
-   * 总话数。
-   *
-   * **优先用逐集列表的实际长度**：`total_episodes` 统计的是整部作品（含后续季），
+   * 总话数。**优先用逐集列表的实际长度**：`total_episodes` 统计的是整部作品（含后续季），
    * 而 `eps` 是 Bangumi 维护者填的预期话数，两者都可能与逐集列表对不上。
-   * 逐集列表是"确实存在这些集"，最可信。
    */
   private resolveTotal(subject: BgmSubject, episodes: BgmEpisodes | null): number | null {
     const listed = episodes?.data?.length ?? 0
@@ -241,10 +346,8 @@ export class InfoService {
   }
 
   /**
-   * 评分：与推送表同一套算法（由 `rating.count` 算算术平均，两位小数）。
-   *
-   * 复算而不是共用 `computeScore`，是因为那个函数在 `localizer.ts` 里是私有的；
-   * 逻辑只有几行，重复比把私有实现导出更干净。
+   * 评分：与推送表同一套算法（由 `rating.count` 算算术平均，两位小数）。这里复算而不是共用
+   * `computeScore`，是因为那个函数在 `localizer.ts` 里是私有的，逻辑只有几行。
    */
   private resolveScore(subject: BgmSubject): number | null {
     const count = subject.rating?.count
@@ -264,10 +367,8 @@ export class InfoService {
   }
 
   /**
-   * 连载状态。
-   *
-   * AniList 优先——它对在播作品会给 `RELEASING`，比按日期推算可靠（延期、停播都能反映）。
-   * 没有 AniList 数据时退回日期推算：末集已过就是完结，首集未到就是未开播。
+   * 连载状态。AniList 优先——它对在播作品会给 `RELEASING`，比按日期推算可靠（延期、停播都能
+   * 反映）；没有 AniList 数据时退回日期推算：末集已过就是完结，首集未到就是未开播。
    */
   private resolveStatus(
     subject: BgmSubject,
@@ -333,11 +434,9 @@ export class InfoService {
   }
 
   /**
-   * 挑展示用的标签。
-   *
-   * Bangumi 的热门标签里常混着「TV」「2026」这类**与类型/首播重复**的项——这两条
-   * 已经在标签行里单独给出了，再出现一次只是占位置。年份标签（`2026年10月`）保留，
-   * 它比纯数字更能说明档期。按原始热度顺序取前 6 个。
+   * 挑展示用的标签。先剔掉**与已展示信息重复**的项，再按原始热度取前几个：
+   * `TV` 这类与类型重复（类型已在标签行首位单独给出），纯年份与 `2026年10月` 这类档期标签
+   * 与首播时间重复且更模糊。
    */
   private pickTags(subject: BgmSubject): string[] {
     const type = (subject.platform || this.platformOf(subject.type)).toUpperCase()
@@ -346,9 +445,10 @@ export class InfoService {
       const name = tag.name?.trim()
       if (!name) continue
       if (name.toUpperCase() === type) continue
-      if (/^\d{4}$/.test(name)) continue
+      // 纯年份，或 `2026年10月` / `2026年` 这类档期标签
+      if (/^\d{4}(年\d{1,2}月?)?$/.test(name)) continue
       if (!out.includes(name)) out.push(name)
-      if (out.length >= 6) break
+      if (out.length >= MAX_TAGS) break
     }
     return out
   }
@@ -367,10 +467,8 @@ export class InfoService {
 }
 
 /**
- * 简介拍平成单段。
- *
- * Bangumi 的简介里常有换行与全角空格缩进，直接画到卡片上会出现长短不一的空行；
- * 折行交给渲染层按像素宽度处理。
+ * 简介拍平成单段。Bangumi 的简介里常有换行与全角空格缩进，直接画到卡片上会出现长短不一的
+ * 空行；折行交给渲染层按像素宽度处理。
  */
 function flattenSummary(summary?: string): string {
   if (!summary) return ''

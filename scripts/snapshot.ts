@@ -44,7 +44,11 @@ function slimItem(item: DigestItem) {
   return {
     tid: item.tid,
     bgmId: item.bgmId,
+    // 详情查询按它精确问 AniList，漏掉的话这条改动不会被快照覆盖
+    aniListId: item.aniListId,
     name: item.name,
+    // `both` 样式下原名单独成字段；漏掉它的话「标题渲染」这条改动不会被快照覆盖
+    titleOriginal: item.titleOriginal,
     date: item.date,
     time: item.time,
     episode: item.episode,

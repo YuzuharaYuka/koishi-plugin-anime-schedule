@@ -128,7 +128,7 @@ export function formatClock(ms: number, timeZone: string): string {
  * 详情页用的时刻文案，形如 `2026/10/16周五 22:00`。
  *
  * 与推送表的 `9/27周日 23:00` 不同，这里**带年份**：详情页是查一部作品本身，
- * 读者常常在看往季甚至几年前的番，只有月日会让人分不清是哪一年。
+ * 需支持往季甚至数年前的番剧，仅月日无法确定年份。
  */
 export function formatMoment(ms: number, timeZone: string, weekdayNames: string[]): string {
   const { year, month, day } = readParts(ms, timeZone)

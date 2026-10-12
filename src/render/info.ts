@@ -1,54 +1,61 @@
 import type { SKRSContext2D } from '@napi-rs/canvas'
 import { createCanvas } from '@napi-rs/canvas'
-import { THEME, drawCard, drawContainImage, drawCoverPlaceholder, drawPill, fillRoundRect, fitText } from './canvas'
+import { THEME, drawCard, drawContainImage, drawCoverPlaceholder, drawPill, fillRoundRect, fitText, strokeRoundRect } from './canvas'
 import { FONT_SIZE, font } from './fonts'
 import type { SubjectInfo } from '../services/info'
 import type { Messages } from '../constants'
 
-/**
- * 作品详情卡的排版常量。
- *
- * 与推送表的 `IMAGE_LAYOUT` 分开：那张是「一次列很多部」，这张是「一部讲清楚」，
- * 因此字号更大、留白更多，宽度也窄一些（详情卡不需要横向铺开）。
- */
+/** 作品详情卡的排版常量，与推送表的 `IMAGE_LAYOUT` 分开：那张列很多部，这张讲清一部 */
 const L = {
   width: 880,
   padding: 24,
-  radius: 18,
-  /** 封面：3:4 是动画海报的常见比例，比 1:1 少留白 */
-  posterWidth: 196,
+  radius: 16,
+  gap: 20,
+
+  /** 封面高度基本固定，宽度随图片比例伸缩，使 header 高度由右侧文字区决定 */
+  posterHeight: 168,
   posterRatio: 3 / 4,
-  /** 封面与右侧文字之间的间距 */
-  gap: 22,
-  titleSize: 27,
-  originalSize: 14,
-  scoreSize: 40,
-  chipHeight: 26,
-  chipGap: 8,
-  chipSize: 12,
-  sectionGap: 18,
+  posterMaxWidth: 160,
+
+  titleSize: 26,
+  originalSize: 13,
+  scoreSize: 34,
+  chipHeight: 22,
+  chipGap: 6,
+  chipSize: 11,
+  sectionGap: 16,
   sectionTitleSize: 14,
-  bodySize: 13.5,
+  bodySize: 13,
   bodyLineHeight: 22,
-  /** 简介最多画多少行，超出截断 */
-  summaryLines: 5,
-  /** 逐集进度 */
-  epCell: 30,
-  epGap: 5,
-  /** 一格最小宽度，再小数字就挤了 */
-  epCellMin: 15,
-  /** 话数超过这个值就不铺格子，改为一行文字说明（长期连载番会有几百话） */
+  summaryLines: 4,
+
+  /** 逐集胶囊：圆角方形，固定尺寸，一行最多 12 个 */
+  epMinWidth: 26,
+  epHeight: 26,
+  epRadius: 4,
+  epGap: 8,
+  epPerRow: 12,
+  /** 超过此数就不铺胶囊，只给一行文字（长期连载番有几百话） */
   epGridMax: 60,
-  /**
-   * 底部两栏的基准高度。
-   *
-   * 逐集方格与评分柱共用这条带：方块从顶部往下排，柱子**从底部往上长**。
-   * 早先柱子也从顶部往下长，长柱会顶到方格那一行，看起来像多出来的格子。
-   *
-   * 方格只排一行时用这个值；话数多到必须两行时按实际高度撑开（见 `renderInfoCard`）。
-   */
-  bandHeight: 72,
-  footerHeight: 30,
+
+  /** 标签栏最多显示几个题材标签，多出的丢弃 */
+  maxTags: 10,
+
+  sectionTitleGap: 8,
+  /** Meta 标签组与正文之间的留白 */
+  summaryGap: 14,
+
+  /** 评分图表：10 柱 × (柱宽 + 间距)，另留 10 个刻度数字的位置 */
+  scoreChartWidth: 240,
+  footerGapColumns: 24,
+  scoreChartHeight: 60,
+  scoreAxisHeight: 18,
+  scoreBarWidth: 18,
+  scoreBarGap: 7,
+
+  footerGap: 14,
+  footerHeight: 26,
+  coverRadius: 6,
 } as const
 
 /** 卡片需要的全部素材 */
@@ -61,49 +68,28 @@ export interface InfoCard {
 }
 
 /**
- * 作品详情卡。
- *
- * ## 布局
- *
- * ```
- * ┌────────┬──────────────────────────────────────┐
- * │        │ 葬送的芙莉莲              [已订阅]    │
- * │ 封面   │ 葬送のフリーレン                      │
- * │        │ ★ 8.52   36553 人评分                │
- * │        │ [TV] [2023/9/29周五] [已完结]         │
- * ├────────┴──────────────────────────────────────┤
- * │ 简介                                          │
- * │ 魔法使芙莉莲和勇者辛美尔……                    │
- * ├───────────────────┬───────────────────────────┤
- * │ 放送进度  28/28   │ 评分分布                  │
- * │ ①②③④⑤⑥…        │         ▂▅▇▆▃             │
- * └───────────────────┴───────────────────────────┘
- * ```
- *
- * 几个刻意的取舍：
- *
- * - **右栏有多少内容算多少**，不钉死高度——卡片整体高度由封面与右栏较高者决定。
- *   参考图那版右栏下方留了一大片空白，是因为把右栏高度也写死了。
- * - **逐集进度用带底色的方格**而不是大圆角按钮：一季 12 话只需一行，半年番 24 话两行，
- *   纵向占用少很多。已播用强调色实心，未播用浅灰。
- * - **评分分布与逐集进度并排**，共用 `bandHeight` 这条基线，省掉一个垂直区块。
- * - 话数超过 `epGridMax`（长期连载番）时**不铺格子**，只给一行 `已播 N 话` 文案，
- *   否则 2852 话会画出上百行。
+ * 作品详情卡：三段式（header 封面 + 右栏信息 / body 全宽简介 / footer 两列）。
+ * 封面只与 header 并排，不向下穿透；底部两列顶部对齐、各自决定高度。
  */
 export function renderInfoCard(card: InfoCard): { width: number; height: number; draw: (ctx: SKRSContext2D) => void } {
   const { info, messages, cover } = card
-  const inner = L.width - L.padding * 2
-  const posterHeight = Math.round(L.posterWidth / L.posterRatio)
-  const textWidth = inner - L.posterWidth - L.gap
+  // 卡片画在 x=padding、宽 width-padding*2；内容再各让 padding，故内容区为 width-padding*4
+  const cardWidth = L.width - L.padding * 2
+  const inner = L.width - L.padding * 4
+  const posterHeight = L.posterHeight
+  const posterWidth = Math.round(
+    Math.min(L.posterMaxWidth, Math.max(96, cover ? posterHeight * (cover.width / cover.height) : posterHeight * L.posterRatio)),
+  )
+  const textWidth = inner - posterWidth - L.gap
 
-  // 卡片高度取决于折行结果，而折行需要 measureText，因此先量一遍再画。
-  // 用与成品同宽的临时画布，量出的宽度与实际绘制完全一致。
+    // 高度取决于折行结果，先用同宽临时画布量一遍
   const measure = createCanvas(L.width, 10).getContext('2d')
   const titleLines = wrapText(measure, info.name, textWidth, L.titleSize, 2, true)
   const chips = buildChips(info, messages)
   const chipRows = layoutChips(measure, chips, textWidth)
-  const summaryLines = info.summary
-    ? wrapText(measure, info.summary, inner, L.bodySize, L.summaryLines, false)
+  const cleanSummary = stripSummaryNoise(info.summary)
+  const summaryLines = cleanSummary
+    ? wrapText(measure, cleanSummary, inner, L.bodySize, L.summaryLines, false)
     : []
   const hasSummary = summaryLines.length > 0
 
@@ -112,32 +98,38 @@ export function renderInfoCard(card: InfoCard): { width: number; height: number;
     + (info.original ? L.originalSize + 8 : 0)
     + L.scoreSize + 12
     + chipRows.length * (L.chipHeight + L.chipGap)
-  const headerHeight = Math.max(posterHeight, rightHeight)
+    // 再留 gap 余量，保证正文区始终在封面之下（右栏比封面矮时会被压住）
+  const headerHeight = Math.max(posterHeight, rightHeight) + L.gap
 
   const summaryHeight = hasSummary
-    ? L.sectionGap + L.sectionTitleSize + 10 + summaryLines.length * L.bodyLineHeight
+    ? L.summaryGap + L.sectionTitleSize + L.sectionTitleGap + summaryLines.length * L.bodyLineHeight
     : 0
 
-  const progressWidth = Math.round((inner - L.gap) * 0.56)
-  const scoreWidth = inner - progressWidth - L.gap
-  const bandTop = L.padding + headerHeight + summaryHeight + L.sectionGap + L.sectionTitleSize + 10
-  const band = bandMetrics(bandTop, info.totalEpisodes, progressWidth, true)
-  const height = bandTop + band.height + L.padding + L.footerHeight
+    // 左列按 12 个胶囊精确算宽，右列固定宽度；中间空隙由剩余空间吸收
+  const scoreColumnWidth = L.scoreChartWidth
+  const scoreColumnX = L.padding + inner - scoreColumnWidth
+  const progressColumnWidth = L.epPerRow * L.epMinWidth + (L.epPerRow - 1) * L.epGap
+  const footerTop = L.padding + headerHeight + summaryHeight + L.sectionGap
+  const bandTop = footerTop + L.sectionTitleSize + L.sectionTitleGap
+  const band = bandMetrics(bandTop, info.totalEpisodes, progressColumnWidth, scoreColumnWidth)
+  // 两列顶部对齐、各自决定高度，取较高者作为底块高度
+  const footerHeight = Math.max(band.progressHeight, band.scoreHeight)
+  const height = bandTop + footerHeight + L.footerGap + L.padding + L.footerHeight
 
   const draw = (ctx: SKRSContext2D): void => {
     ctx.fillStyle = THEME.background
     ctx.fillRect(0, 0, L.width, height)
-    drawCard(ctx, L.padding, L.padding, inner, height - L.padding * 2, L.radius, { shadow: true })
+    drawCard(ctx, L.padding, L.padding, cardWidth, height - L.padding * 2, L.radius, { shadow: true })
 
     const left = L.padding * 2
     const top = L.padding * 2
 
     // ── 封面 ──
-    if (cover) drawContainImage(ctx, cover, left, top, L.posterWidth, posterHeight, { radius: 12 })
-    else drawCoverPlaceholder(ctx, info.name, left, top, L.posterWidth, posterHeight, 12)
+    if (cover) drawContainImage(ctx, cover, left, top, posterWidth, posterHeight, { radius: L.coverRadius, shadow: true })
+    else drawCoverPlaceholder(ctx, info.name, left, top, posterWidth, posterHeight, L.coverRadius)
 
     // ── 右栏 ──
-    const textLeft = left + L.posterWidth + L.gap
+    const textLeft = left + posterWidth + L.gap
     let cursor = top
 
     ctx.textAlign = 'left'
@@ -148,12 +140,18 @@ export function renderInfoCard(card: InfoCard): { width: number; height: number;
       ctx.fillText(line, textLeft, cursor)
       cursor += L.titleSize + 6
     }
-    // 「已订阅」贴在标题行右侧
+    // 「已订阅」贴标题行右侧，右边缘与卡片内边距对齐。用低饱和软胶囊而非实心色块：
+    // 详情卡只有一个状态标记，实心色块会与标题争视觉重心
     if (info.subscribed) {
-      ctx.font = font(L.chipSize, true)
-      const width = ctx.measureText(messages.subscribedBadge).width + 18
-      drawPill(ctx, messages.subscribedBadge, textLeft + textWidth - width, top - 2, {
-        font: font(L.chipSize, true), color: THEME.onAccent, background: THEME.accent, height: 22, paddingX: 9,
+      const badgeFont = font(L.chipSize, true)
+      ctx.font = badgeFont
+      const width = ctx.measureText(messages.subscribedBadge).width + 20
+      drawPill(ctx, messages.subscribedBadge, textLeft + textWidth - width, top, {
+        font: badgeFont,
+        color: THEME.accent,
+        background: THEME.accentSoft,
+        height: 24,
+        paddingX: 10,
       })
     }
 
@@ -196,16 +194,27 @@ export function renderInfoCard(card: InfoCard): { width: number; height: number;
       }
     }
 
-    // ── 底块：放送进度 + 评分分布，共用同一条底线 ──
-    const titleY = bandTop - L.sectionTitleSize - 10
-    drawProgressTile(ctx, info, messages, left, titleY, band.baseline, progressWidth, band.grid)
-    drawScoreTile(ctx, info, messages, left + progressWidth + L.gap, titleY, band.baseline, scoreWidth, band.grid?.height ?? 0)
+    // 底块：两列独立布局，顶部对齐
+    const titleLine = bandTop - L.sectionTitleSize - L.sectionTitleGap
+    drawProgressTile(ctx, info, messages, left, progressColumnWidth, titleLine, bandTop, band.grid)
+    drawScoreTile(
+      ctx, info, messages,
+      scoreColumnX,
+      scoreColumnWidth, titleLine, band.baseline,
+    )
 
-    // ── 页脚 ──
+    // ── 页脚：左边条目 ID（供 `anime.sub` / `anime.info` 直接抄），右边数据更新时间 ──
     ctx.font = font(FONT_SIZE.footer)
+    ctx.textBaseline = 'top'
+    const footerY = height - L.padding - L.footerHeight + 4
+    if (info.bgmId !== null) {
+      ctx.fillStyle = THEME.muted
+      ctx.textAlign = 'left'
+      ctx.fillText(`ID:${info.bgmId}`, left, footerY)
+    }
     ctx.fillStyle = THEME.muted
     ctx.textAlign = 'right'
-    ctx.fillText(card.footer, L.width - L.padding * 2, height - L.padding - L.footerHeight / 2 - 4)
+    ctx.fillText(card.footer, L.width - L.padding * 2, footerY)
     ctx.textAlign = 'left'
   }
 
@@ -218,7 +227,7 @@ function buildChips(info: SubjectInfo, messages: Messages): string[] {
   if (info.type) chips.push(info.type)
   if (info.airLabel) chips.push(info.airLabel)
   chips.push(statusText(info.status, messages))
-  for (const tag of info.tags.slice(0, 3)) chips.push(tag)
+  for (const tag of info.tags.slice(0, L.maxTags)) chips.push(tag)
   return chips.filter(Boolean)
 }
 
@@ -278,126 +287,112 @@ function drawSectionTitle(ctx: SKRSContext2D, text: string, x: number, y: number
   ctx.fillText(text, x + 11, y)
 }
 
-/**
- * 算出逐集方格的排列方式。
- *
- * **尽量排成一行**——一季 12~24 话是绝大多数，排成一行时纵向只占 30px，
- * 与评分柱并排非常紧凑。格子宽到能放下全部话数时就用一行，否则按最小宽度折行。
- */
-function gridMetrics(total: number, width: number): { cell: number; gap: number; cols: number; rows: number; height: number } {
-  const gap = L.epGap
-  // 排成一行时需要的最小格子宽度
-  const oneRowCell = Math.floor((width - gap * (total - 1)) / total)
-  if (oneRowCell >= L.epCellMin) {
-    const cell = Math.min(L.epCell, oneRowCell)
-    return { cell, gap, cols: total, rows: 1, height: cell }
-  }
-  // 放不下就按最小宽度折行，格子用基准尺寸保持可读
-  const cols = Math.max(1, Math.floor((width + gap) / (L.epCellMin + gap)))
+/** 算出逐集胶囊的排列：尺寸固定、一行最多 `epPerRow` 个，超出折行——不压缩宽度去凑一行（那会让数字挤在一起，且尺寸随话数变化） */
+function gridMetrics(total: number, width: number, perRow: number): { cols: number; rows: number; height: number } {
+  // 受可用宽度限制，一行放的个数不会超过 (width + gap) / (minWidth + gap)
+  const fit = Math.max(1, Math.floor((width + L.epGap) / (L.epMinWidth + L.epGap)))
+  const cols = Math.max(1, Math.min(total, perRow, fit))
   const rows = Math.ceil(total / cols)
-  return { cell: L.epCell, gap, cols, rows, height: rows * L.epCell + (rows - 1) * gap }
+  return { cols, rows, height: rows * L.epHeight + (rows - 1) * L.epGap }
 }
 
-/**
- * 底部整条带的几何：进度方格与评分柱**共用同一条底线**。
- *
- * 之前只让两栏共用起点、各自向下或向上延伸，结果柱子从带内往上涨时会顶到方格。
- * 这里把"底线"显式算出来传给两边：方格从底线往上排，柱子也从底线往上长，
- * 并且柱高上限不超过方格总高，两者因此永远不会相交。
- */
+/** 底部两列的几何：两列顶部对齐、各自决定高度互不拉伸；柱区不超过左列高度，避免柱子顶到上一行胶囊 */
 function bandMetrics(
   bandTop: number,
   total: number | null,
-  width: number,
-  showGrid: boolean,
-): { height: number; baseline: number; grid: ReturnType<typeof gridMetrics> | null } {
-  const grid = showGrid && total !== null && total > 0 && total <= L.epGridMax
-    ? gridMetrics(total, width)
+  progressWidth: number,
+  scoreWidth: number,
+): { progressHeight: number; scoreHeight: number; baseline: number; grid: ReturnType<typeof gridMetrics> | null } {
+  void scoreWidth
+  const grid = total !== null && total > 0 && total <= L.epGridMax
+    ? gridMetrics(total, progressWidth, L.epPerRow)
     : null
-  // 底部留 16px 画 1/10 刻度
-  const scaleRoom = L.bandHeight - 16
-  const gridHeight = grid?.height ?? 0
-  // 带高要同时容下"方格 + 刻度"和"柱子 + 刻度"；柱高上限不超过方格，避免喧宾夺主
-  const height = Math.max(L.bandHeight, gridHeight + 16)
-  return { height, baseline: bandTop + height - 16, grid }
+  const progressHeight = grid?.height ?? L.bodySize
+  // 柱区固定高度；同时不超过左列高度，避免柱子从基线往上长时压到上一行胶囊
+  const barRoom = Math.max(14, Math.min(L.scoreChartHeight, progressHeight))
+  const scoreHeight = barRoom + L.scoreAxisHeight
+  return { progressHeight, scoreHeight, baseline: bandTop + barRoom, grid }
 }
 
-/** 放送进度：已播/总话数 + 逐集方格（从基线往上排） */
+/** 放送进度：标题行（标题 + 数值）+ 逐集胶囊（圆角方形，一行最多 12 个） */
 function drawProgressTile(
   ctx: SKRSContext2D,
   info: SubjectInfo,
   messages: Messages,
   x: number,
-  titleY: number,
-  baseline: number,
-  width: number,
-  grid: { cell: number; gap: number; cols: number; rows: number; height: number } | null,
+  columnWidth: number,
+  lineY: number,
+  top: number,
+  grid: { cols: number; rows: number; height: number } | null,
 ): void {
-  drawSectionTitle(ctx, messages.infoProgress, x, titleY)
-
+  // 标题行：数值紧跟标题右侧，不推到栏位最右，避免与胶囊网格错位
+  drawSectionTitle(ctx, messages.infoProgress, x, lineY)
   const total = info.totalEpisodes
   const aired = info.airedEpisodes
+  const value = total !== null
+    ? (aired !== null ? `${aired} / ${total}` : `${total} ${messages.infoEpisodes}`)
+    : messages.infoUnknown
+  ctx.font = font(L.sectionTitleSize, true)
+  const titleWidth = ctx.measureText(messages.infoProgress).width + 14
   ctx.font = font(L.bodySize, true)
-  ctx.fillStyle = THEME.title
-  ctx.textAlign = 'right'
-  ctx.textBaseline = 'top'
-  ctx.fillText(
-    total !== null ? (aired !== null ? `${aired}/${total}` : `${total} ${messages.infoEpisodes}`) : messages.infoUnknown,
-    x + width,
-    titleY + 1,
-  )
+  ctx.fillStyle = THEME.muted
   ctx.textAlign = 'left'
+  ctx.textBaseline = 'top'
+  ctx.fillText(value, x + titleWidth, lineY + 1)
+  void columnWidth
 
   if (!grid) {
-    // 长期连载番或话数未知：只给一行说明，不铺格子，否则 2852 话会画出上百行
+    // 长期连载番或话数未知：只给一行说明，不铺胶囊，否则几百话会画出上百行
     ctx.font = font(L.bodySize)
     ctx.fillStyle = THEME.muted
     const text = aired !== null
       ? `${messages.infoAired} ${aired} ${messages.infoEpisodes}`
       : messages.infoNoSchedule
-    ctx.fillText(fitText(ctx, text, width), x, baseline - L.bodySize - 4)
+    ctx.fillText(fitText(ctx, text, columnWidth), x, top + 2)
     return
   }
 
-  // 方格整体贴基线：最后一行底边落在 baseline 上
-  const gridTop = baseline - grid.height
+  // ── 胶囊：从 top 往下排，文字在方块内居中 ──
+  const radius = L.epRadius
+  ctx.font = font(11, false)
+  ctx.textAlign = 'center'
+  ctx.textBaseline = 'middle'
   for (let index = 0; index < (total ?? 0); index++) {
     const col = index % grid.cols
     const row = Math.floor(index / grid.cols)
-    const cellX = x + col * (grid.cell + grid.gap)
-    const cellY = gridTop + row * (grid.cell + grid.gap)
+    const pillX = x + col * (L.epMinWidth + L.epGap)
+    const pillY = top + row * (L.epHeight + L.epGap)
     const isAired = aired !== null && index < aired
     if (isAired) {
-      fillRoundRect(ctx, cellX, cellY, grid.cell, grid.cell, 7, THEME.accent)
+      // 已播：实心珊瑚红 + 白字（与列表里「已订阅」气泡同色）
+      fillRoundRect(ctx, pillX, pillY, L.epMinWidth, L.epHeight, radius, THEME.accent)
       ctx.fillStyle = THEME.onAccent
     } else {
-      fillRoundRect(ctx, cellX, cellY, grid.cell, grid.cell, 7, THEME.badge)
-      ctx.fillStyle = THEME.muted
+      // 未播：浅灰底 + 浅灰字 + 更浅的描边勾出轮廓；仅靠底色时与白色卡片难以区分
+      fillRoundRect(ctx, pillX, pillY, L.epMinWidth, L.epHeight, radius, THEME.inert)
+      strokeRoundRect(ctx, pillX + 0.5, pillY + 0.5, L.epMinWidth - 1, L.epHeight - 1, radius, THEME.inertBorder)
+      ctx.fillStyle = THEME.inertText
     }
-    ctx.font = font(11, true)
-    ctx.textAlign = 'center'
-    ctx.textBaseline = 'middle'
-    ctx.fillText(String(index + 1), cellX + grid.cell / 2, cellY + grid.cell / 2 + 0.5)
+    ctx.fillText(String(index + 1), pillX + L.epMinWidth / 2, pillY + L.epHeight / 2 + 0.5)
   }
   ctx.textAlign = 'left'
   ctx.textBaseline = 'top'
 }
 
 /**
- * 评分分布：1~10 各分数段的人数。
+ * 评分分布：1~10 各分数段的人数。固定宽度与柱区高度，紧贴标题下方不拉伸，
+ * 柱区高度固定才能体现高度差。非峰值浅红，峰值珊瑚红。
  *
- * 柱子从 `baseline` 往上长，高度上限为左侧方格的总高（`maxBar`），
- * 因此无论方格排几行，两者都不会相交。最高的那一段用强调色，其余淡化。
+ * @param baseline 柱子底边，刻度画在它下面
  */
 function drawScoreTile(
   ctx: SKRSContext2D,
   info: SubjectInfo,
   messages: Messages,
   x: number,
+  columnWidth: number,
   titleY: number,
   baseline: number,
-  width: number,
-  maxBar: number,
 ): void {
   drawSectionTitle(ctx, messages.infoScoreBoard, x, titleY)
 
@@ -405,25 +400,51 @@ function drawScoreTile(
   if (!count) {
     ctx.font = font(L.bodySize)
     ctx.fillStyle = THEME.muted
-    ctx.fillText(messages.infoNoScore, x, baseline - L.bodySize - 4)
+    ctx.fillText(messages.infoNoScore, x, baseline - L.bodySize)
     return
   }
 
   const values = Array.from({ length: 10 }, (_, index) => Number(count[String(index + 1)] ?? 0))
   const max = Math.max(...values, 1)
-  const barGap = 4
-  const barWidth = Math.max(4, Math.floor((width - barGap * 9) / 10))
-  // 柱高上限取方格总高，再留一点余量；没有方格时用整条带的高度
-  const ceiling = Math.max(18, Math.min(maxBar || L.bandHeight, L.bandHeight) - 6)
+  const slot = L.scoreBarWidth + L.scoreBarGap
+  const chartWidth = 9 * slot + L.scoreBarWidth
+  const barRoom = baseline - (titleY + L.sectionTitleSize + L.sectionTitleGap)
+  const centreOf = (index: number) => x + index * slot + L.scoreBarWidth / 2
 
-  // 不画 1/10 刻度：柱子从基线往上长，刻度放在基线下方会紧贴卡片底边，
-  // 放在上方又会与柱顶打架。10 根柱子本身已经表达了"1 到 10 分"的分布。
   for (let index = 0; index < 10; index++) {
     const value = values[index] ?? 0
-    const barHeight = Math.max(3, Math.round((value / max) * ceiling))
-    const barX = x + index * (barWidth + barGap)
-    fillRoundRect(ctx, barX, baseline - barHeight, barWidth, barHeight, 3, value === max && value > 0 ? THEME.accent : '#f6cfcc')
+    // 高度按人数占比映射；0 人也留 2px，以区分"这一档没人"与"没有这一档"
+    const barHeight = value === 0 ? 2 : Math.max(3, Math.round((value / max) * barRoom))
+    const barX = x + index * slot
+    const hot = value === max && value > 0
+    // 顶部圆角 2px（`fillRoundRect` 的半径会被高度限制住，所以矮柱也不会变成圆点）
+    fillRoundRect(ctx, barX, baseline - barHeight, L.scoreBarWidth,
+      barHeight, 2, hot ? THEME.accent : THEME.scoreBar)
   }
+
+  // 基线：把柱子与刻度连起来
+  ctx.strokeStyle = THEME.divider
+  ctx.lineWidth = 1
+  ctx.beginPath()
+  ctx.moveTo(x, baseline + 0.5)
+  ctx.lineTo(x + chartWidth, baseline + 0.5)
+  ctx.stroke()
+
+  // 刻度全标并压在对应柱子中线上：仅凭柱子无法分辨各档分数
+  ctx.font = font(10)
+  ctx.fillStyle = THEME.inertText
+  ctx.textBaseline = 'top'
+  ctx.textAlign = 'center'
+  const axisY = baseline + 4
+  for (let index = 0; index < 10; index++) {
+    ctx.fillText(String(index + 1), centreOf(index), axisY)
+  }
+  ctx.textAlign = 'left'
+}
+
+/** 去掉简介噪声：部分条目把「中文简介 + `[简介原文]` + 日文原文」拼在一起，截到标记为止 */
+function stripSummaryNoise(summary: string): string {
+  return (summary ?? '').split(/\[(?:简介原文|内容简介|原文简介)\]/i)[0].trim()
 }
 
 /** 按像素宽度折行，最多 `maxLines` 行，最后一行超出时补省略号 */
@@ -442,21 +463,26 @@ function wrapText(
 
   const lines: string[] = []
   let current = ''
-  // 中文没有词边界，逐字累加即可；英文单词被拆开也不影响可读性
+  let rest = ''
+  // 中文无词边界，逐字累加；英文单词被拆开不影响可读性
   for (const char of value) {
     const next = current + char
     if (ctx.measureText(next).width > maxWidth && current) {
       lines.push(current)
       current = char
-      if (lines.length === maxLines) break
+      if (lines.length === maxLines) {
+        // 第 maxLines 行填满后仍有剩余，记下待补省略号。不可将 `current` 整段拼回：
+        // 它此时可能已很长，`fitText` 遇「整串超宽」会返回空串并画出界
+        rest = current
+        current = ''
+        break
+      }
     } else {
       current = next
     }
   }
   if (lines.length < maxLines && current) lines.push(current)
-  else if (lines.length === maxLines && current) {
-    lines[maxLines - 1] = fitText(ctx, lines[maxLines - 1] + current, maxWidth)
-  }
+  else if (rest) lines[maxLines - 1] = fitText(ctx, `${lines[maxLines - 1]}${rest}`, maxWidth)
   if (lines.length > maxLines) lines.length = maxLines
   return lines
 }

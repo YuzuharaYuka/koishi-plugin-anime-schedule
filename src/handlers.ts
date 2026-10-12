@@ -3,12 +3,12 @@ import { DIGEST_LABELS, RESPONSES, getMessages } from './constants'
 import type { Config } from './config'
 import type { Digest, DigestItem, DigestKind } from './types'
 import type { DigestService } from './services/digest'
-import type { InfoService } from './services/info'
+import { INFO_FETCH_CONCURRENCY, type InfoService, type SubjectInfo } from './services/info'
 import { sendTextDigest } from './services/dispatch'
 import type { Renderer } from './render/image'
 import { renderInfoText, renderSearchText } from './render/text'
 import { formatDate, getDayStartMs, getLocalWeekday, getSeasonStartMonth, today } from './utils/time'
-import { clamp, formatNetworkError, truncate } from './utils'
+import { clamp, formatNetworkError, mapLimit, truncate } from './utils'
 
 const KIND_ALIASES: Record<string, DigestKind> = {
   daily: 'daily',
@@ -79,11 +79,8 @@ function channelOf(session: Session): string {
 }
 
 /**
- * 把索引层给内部的来源说法翻成用户能读的短句。
- *
- * `BangumiDataIndex.source` 返回的是 `本地依赖包` / `磁盘缓存` / `CDN 镜像` 这类
- * **面向日志**的词，直接摆到 `anime.status` 里用户看不懂，也判断不出该不该在意
- * ——正常情况是"随插件内置"，出现另外两种才值得看一眼。
+ * 把索引层面向日志的来源词翻成用户能读的短句：正常情况是"随插件内置"，
+ * 出现磁盘缓存或 CDN 镜像才值得看一眼。
  */
 function describeIndexSource(source: string): string {
   switch (source) {
@@ -132,12 +129,7 @@ async function replyDigest(deps: HandlerContext, session: Session, digest: Diges
   await session.send(content)
 }
 
-/**
- * 取当前频道已订阅的作品，用于让手动触发的图片也带「已订阅」气泡。
- *
- * 定时推送走 `DigestService.build()`，它内部会查订阅；指令层直接调 `buildDaily()`
- * 之类的入口，默认拿不到订阅集合，因此这里统一补上。
- */
+/** 取当前频道已订阅的作品：指令层直接调 `buildDaily()` 等入口默认不带订阅集合，这里统一补上 */
 function subscribedOf(deps: HandlerContext, session: Session): Promise<Set<string>> {
   return deps.digest.subscribedKeys(platformOf(session), channelOf(session))
 }
@@ -167,13 +159,8 @@ export async function commandWeekly(deps: HandlerContext, session: Session): Pro
 }
 
 /**
- * 手动查看新番表。
- *
- * 不带参数看当季；带参数可以查往季或未来的下一季：
- * - `anime.season 2025-04` / `2025年4月` / `25春` → 指定年月
- * - `anime.season -1` → 上一季；`anime.season +1` / `26秋` → 下一季
- *
- * 允许往后看：bangumi-data 通常已经收录下一季的部分作品（先行公布的首播时间）。
+ * 手动查看新番表：不带参数看当季，带参数可查往季或下一季。允许往后看——
+ * bangumi-data 通常已收录下一季的部分作品（先行公布的首播时间）。
  */
 export async function commandSeason(
   deps: HandlerContext,
@@ -182,8 +169,7 @@ export async function commandSeason(
   offsetOption?: number,
 ): Promise<string | void> {
   const { digest } = deps
-  // 「相对偏移」用 `-o` 传：`anime.season -1` 里的 `-1` 会被 CLI 当成选项而不是参数，
-  // 因此不能指望位置参数收到它。位置参数留给「指定季度」这类写不清是偏移的写法。
+  // 相对偏移必须用 `-o` 传：`anime.season -1` 里的 `-1` 会被 CLI 当成选项，位置参数收不到
   const parsed = parseSeasonTarget(target, digest.timeZone)
   if (parsed.error) return parsed.error
   const offset = offsetOption ?? parsed.offset
@@ -198,7 +184,7 @@ export async function commandSeason(
   })
 }
 
-/** 允许往后查询的季度数：bangumi-data 一般已收录下一季，再往后多为空白 */
+/** 允许往后查询的季度数：再往后多为空白 */
 const SEASON_FUTURE_LIMIT = 2
 
 /** 季度参数的解析结果 */
@@ -210,10 +196,8 @@ interface SeasonTarget {
 const SEASON_WORDS: Record<string, number> = { 冬: 1, 春: 4, 夏: 7, 秋: 10 }
 
 /**
- * 解析季度参数。
- *
- * 支持 `2025-04`、`2025/4`、`2025年4月`、`25春`（中文季名）以及纯数字偏移
- * （`-1` 上一季、`0` 当季、`+1` 下一季）。不传时返回当季。
+ * 解析季度参数：`2025-04` / `2025/4` / `2025年4月` / `25春` 等年月写法，
+ * 或纯数字偏移（`-1` 上一季、`0` 当季、`+1` 下一季）。不传时返回当季。
  */
 function parseSeasonTarget(raw: string | undefined, timeZone: string): SeasonTarget {
   const text = (raw ?? '').trim()
@@ -290,9 +274,8 @@ export async function commandSearch(
     if (!items.length) return RESPONSES.emptySearch(query)
     writeSearchCache(session, items)
 
-    // 只给文本列表（带评分与档期），不逐条渲染详情卡：
-    // 一次搜索常有十来个结果，十张卡片刷屏反而看不出哪个是哪个。
-    // 想看详情时用 `anime.info <序号>` 或直接点 ID。
+    // 仅输出文本列表（含评分与档期）：十余条结果逐条出详情卡会刷屏且难以分辨，
+    // 查看详情用 `anime.info <序号>` 或直接点 ID
     return renderSearchText(items, query, deps.config)
   } catch (error) {
     deps.logger.warn('[command] 搜索失败:', error)
@@ -301,10 +284,11 @@ export async function commandSearch(
 }
 
 /**
- * 单部作品详情。
+ * 番剧详情。按目标类型分两条路径：
  *
- * 目标可以是 Bangumi 条目 ID，也可以是上一次搜索结果里的序号（与 `anime.sub` 同一套解析），
- * 因此「搜索 → 看详情 → 订阅」是一条连贯的路径。
+ * - **唯一一部**：`anime.info 253104`（Bangumi 条目 ID）或 `anime.info 3`（上次搜索结果序号），出单张详情卡。
+ * - **关键词**：`anime.info 芙莉莲`，命中各部各出一张卡，多张时走合并转发。
+ *   上限由 `output.infoKeywordLimit` 控制，`0` 表示不限制。
  */
 export async function commandInfo(
   deps: HandlerContext,
@@ -312,38 +296,107 @@ export async function commandInfo(
   target: string,
 ): Promise<string | h | void> {
   const raw = (target ?? '').trim()
-  if (!raw) return '用法: anime.info <Bangumi 条目 ID 或搜索结果序号>'
+  if (!raw) return '用法: anime.info <Bangumi 条目 ID / 搜索结果序号 / 标题关键词>'
 
-  let bgmId: number | null = null
-  if (BGM_ID.test(raw)) {
-    bgmId = Number(raw)
-  } else {
-    // 不是纯数字就当作搜索关键词，省掉「先 search 再 info」这一步
-    const items = await deps.digest.search(raw, 1)
-    bgmId = items[0]?.bgmId ?? null
-    if (bgmId === null) return RESPONSES.notFound
+  // ── 唯一一部：条目 ID / 搜索结果序号 ──
+  const id = resolveInfoId(deps, session, raw)
+  if (id !== null) return sendInfoDetail(deps, session, id)
+
+  // ── 关键词：命中几部就出几张卡，0 表示不限制 ──
+  const keyword = raw.replace(/^bgm:/i, '')
+  let found: DigestItem[]
+  try {
+    found = await deps.digest.search(keyword, deps.config.output.infoKeywordLimit)
+  } catch (error) {
+    deps.logger.warn('[command] 详情检索失败:', error)
+    return `查询失败。${formatNetworkError(error)}`
   }
+  if (!found.length) return RESPONSES.emptySearch(keyword)
 
-  await session.send(h('quote', { id: session.messageId }) + `正在查询 ID:${bgmId}...`)
+  const picks = found
+    .map((item) => ({ bgmId: item.bgmId, aniListId: item.aniListId }))
+    .filter((pick): pick is { bgmId: number; aniListId: number | null } => pick.bgmId !== null)
+  if (!picks.length) return RESPONSES.notFound
 
   try {
-    const subscribed = await isSubscribed(deps, session, `bgm:${bgmId}`)
-    const detail = await deps.info.fetch(bgmId, subscribed)
-    if (!detail) return RESPONSES.notFound
+    const subscribed = await subscribedIds(deps, session)
+    // 先用索引里的 AniList ID 一次问完状态（按 id_in 批量，而不是逐部搜标题）
+    await deps.info.prefetchAniListStates(
+      picks.map((pick) => pick.aniListId).filter((id): id is number => id !== null),
+    )
+    // 逐部取详情：串行时 20 部要 20 多秒，故按 INFO_FETCH_CONCURRENCY 并发。
+    // 结果保持输入顺序，详情卡顺序才与检索相关度一致。
+    const nodes = await mapLimit(picks, INFO_FETCH_CONCURRENCY, async ({ bgmId, aniListId }) => {
+      const detail = await deps.info.fetch(bgmId, subscribed.has(`bgm:${bgmId}`), aniListId)
+      return detail ? renderInfoNode(deps, detail) : null
+    })
+    const details = nodes.filter((node): node is h => node !== null)
+    if (!details.length) return RESPONSES.notFound
 
-    if (deps.config.output.format !== 'image') return renderInfoText(detail, deps.config)
-    try {
-      const buffer = await deps.renderer.renderInfo(detail)
-      return h.image(buffer, 'image/jpeg')
-    } catch (error) {
-      // 与推送表同样兜底：出图失败就退回文本，不让用户拿到一个错误
-      deps.logger.warn('[command] 详情出图失败，改用文本:', error)
-      return renderInfoText(detail, deps.config)
+    // 单条直接发；多条走合并转发，每条为一个完整详情卡
+    if (details.length === 1) return details[0]
+
+    // 与推送同一判据：配置开启**且**适配器声明支持，否则合并转发会被平台拒绝
+    const canForward = deps.config.output.useForward && session.bot?.supports('message.forward')
+    if (!canForward) {
+      // 不能平铺多张卡，只发首张并提示其余数量
+      await session.send(details[0])
+      return `另有 ${details.length - 1} 部，用 \`anime.search ${keyword}\` 查看全部，或 \`anime.info <ID>\` 单独查看。`
     }
+    return h('figure', [...details])
   } catch (error) {
     deps.logger.warn('[command] 查询作品详情失败:', error)
     return `查询失败。${formatNetworkError(error)}`
   }
+}
+
+/**
+ * 解析出唯一的 Bangumi 条目 ID；非唯一目标返回 `null`，交给关键词检索。
+ *
+ * 纯数字优先按搜索结果序号解释，序号越界或无搜索结果时才作为条目 ID，与 `anime.sub` 规则一致。
+ */
+function resolveInfoId(deps: HandlerContext, session: Session, raw: string): number | null {
+  const tid = BGM_TID.exec(raw)
+  if (tid) return Number(tid[1])
+  if (!BGM_ID.test(raw)) return null
+
+  const picked = readSearchCache(session)[Number(raw) - 1]
+  if (picked?.bgmId != null) return picked.bgmId
+  return Number(raw)
+}
+
+/** 查询并发送单部作品的详情卡 */
+async function sendInfoDetail(deps: HandlerContext, session: Session, bgmId: number): Promise<string | h> {
+  await session.send(h('quote', { id: session.messageId }) + `正在查询 ID:${bgmId}...`)
+  try {
+    const subscribed = await isSubscribed(deps, session, `bgm:${bgmId}`)
+    const detail = await deps.info.fetch(bgmId, subscribed)
+    if (!detail) return RESPONSES.notFound
+    return (await renderInfoNode(deps, detail)) ?? renderInfoText(detail, deps.config)
+  } catch (error) {
+    deps.logger.warn('[command] 查询作品详情失败:', error)
+    return `查询失败。${formatNetworkError(error)}`
+  }
+}
+
+/** 出图，失败时退回文本；两者都不可用时返回 `null` */
+async function renderInfoNode(deps: HandlerContext, detail: SubjectInfo): Promise<h | null> {
+  if (!detail) return null
+  if (deps.config.output.format !== 'image') return h.text(renderInfoText(detail, deps.config))
+  try {
+    const buffer = await deps.renderer.renderInfo(detail)
+    return h.image(buffer, 'image/jpeg')
+  } catch (error) {
+    // 与推送表同样兜底：出图失败退回文本
+    deps.logger.warn('[command] 详情出图失败，改用文本:', error)
+    return h.text(renderInfoText(detail, deps.config))
+  }
+}
+
+/** 本群已订阅的 tid 集合，用于在详情卡上标「已订阅」 */
+async function subscribedIds(deps: HandlerContext, session: Session): Promise<Set<string>> {
+  const rows = await deps.digest.listSubscriptions(platformOf(session), channelOf(session))
+  return new Set(rows.map((row) => row.tid))
 }
 
 /** 该作品是否已被本群订阅 */
@@ -357,11 +410,8 @@ async function isSubscribed(deps: HandlerContext, session: Session, tid: string)
 // #region 订阅管理
 
 /**
- * 查看本群订阅列表。
- *
- * 每条的「状态」按优先级取：
- * 今日有播出 → 显示时刻与集数；否则显示下一次播出的日期；
- * 已经播完 → 明确写出来（调度器会把它自动移除）；都取不到 → 暂无排期。
+ * 查看本群订阅列表。每条的「状态」按优先级取：今日有播出 → 时刻与集数；
+ * 否则下一次播出的日期；已播完 → 明确写出（调度器会自动移除）；都取不到 → 暂无排期。
  */
 export async function commandSubList(deps: HandlerContext, session: Session): Promise<string | void> {
   const { config, digest } = deps
@@ -375,7 +425,7 @@ export async function commandSubList(deps: HandlerContext, session: Session): Pr
     // 一次问 31 天，够覆盖「下次播出」；同时按条目 ID 重新解析名字（订阅时记的会过时）
     const tids = rows.map((row) => row.tid)
     const upcoming = await digest.upcomingAirings(tids, 31)
-    // `upcomingAirings` 会把已播完的作品滤掉，因此单独问一次，用来标注「已播完」
+    // `upcomingAirings` 会滤掉已播完的作品，故单独查询一次用于标注「已播完」
     const finished = new Set(await digest.finishedSubscriptionTids(tids))
     const names = new Map<string, string>()
     const nextOf = new Map<string, DigestItem>()
@@ -414,10 +464,8 @@ export async function commandSubList(deps: HandlerContext, session: Session): Pr
 }
 
 /**
- * 订阅一部作品。
- *
- * 参数可以是 Bangumi 条目 ID（`253104`，就是季表卡片上的 `ID:253104`），
- * 也可以是搜索结果里的序号（需要先 `anime.search`）。
+ * 订阅一部作品：参数可以是 Bangumi 条目 ID（`253104`，即季表卡片上的 `ID:253104`），
+ * 也可以是 `anime.search` 结果里的序号。
  */
 export async function commandSubAdd(deps: HandlerContext, session: Session, target: string): Promise<string | void> {
   const { config, digest } = deps
@@ -428,8 +476,7 @@ export async function commandSubAdd(deps: HandlerContext, session: Session, targ
 
   try {
     const cached = readSearchCache(session)
-    // 纯数字优先按「搜索结果序号」解释（先搜索再 `anime.sub 1` 的用法）；
-    // 序号越界或没有搜索结果时，就当它是 Bangumi 条目 ID
+    // 纯数字优先按「搜索结果序号」解释（先搜索再 `anime.sub 1`）；序号越界或无搜索结果时当作 Bangumi 条目 ID
     const picked = numeric ? cached[Number(raw) - 1] : cached.find((item) => item.tid === `bgm:${raw}`)
     const tid = picked?.tid ?? (numeric ? `bgm:${raw}` : raw)
     if (!BGM_TID.test(tid)) return RESPONSES.invalidTid(raw)
@@ -453,7 +500,12 @@ export async function commandSubAdd(deps: HandlerContext, session: Session, targ
   }
 }
 
-/** 取消订阅，参数可以是订阅列表序号或作品 ID */
+/**
+ * 取消订阅。参数可以是订阅列表序号、Bangumi 条目 ID，或 `bgm:253104` 形式的 tid。
+ *
+ * 纯数字**先按序号、再按条目 ID** 解释：序号在范围内就取该行，否则当作条目 ID。
+ * 与 `anime.info` / `anime.sub` 同一套规则。
+ */
 export async function commandSubRemove(deps: HandlerContext, session: Session, target: string): Promise<string | void> {
   const { digest } = deps
   const raw = (target ?? '').trim()
@@ -463,8 +515,14 @@ export async function commandSubRemove(deps: HandlerContext, session: Session, t
     const rows = await digest.listSubscriptions(platformOf(session), channelOf(session))
     if (!rows.length) return RESPONSES.noSubscription
 
-    let picked = rows.find((row) => row.tid === raw)
-    if (!picked && /^\d+$/.test(raw)) picked = rows[Number(raw) - 1]
+    // 订阅记录里的 tid 是 `bgm:<id>`，裸 ID 必须先补齐前缀才能比对
+    const explicit = BGM_TID.test(raw) ? raw : null
+    const numeric = BGM_ID.test(raw) ? Number(raw) : null
+    const picked = explicit
+      ? rows.find((row) => row.tid === explicit)
+      : numeric === null
+        ? rows.find((row) => row.tid === raw)
+        : rows[numeric - 1] ?? rows.find((row) => row.tid === `bgm:${numeric}`)
     if (!picked) return RESPONSES.invalidIndex(raw)
 
     await digest.removeSubscriptions(platformOf(session), channelOf(session), [picked.tid])
@@ -506,7 +564,7 @@ export async function commandNext(deps: HandlerContext, session: Session, daysTe
       if (item.date !== currentDate) {
         currentDate = item.date
         const weekday = messages.weekdayNames[getLocalWeekday(getDayStartMs(item.date, digest.timeZone), digest.timeZone)] ?? ''
-        // 分组标题前留一个空行，与推送表的分组观感一致
+        // 分组标题前留一个空行，与推送表的分组样式一致
         lines.push(`${lines.length ? '\n' : ''}【${item.date} ${weekday}】`.trimEnd())
       }
       const episode = item.recurring && item.episodeCount > 0 ? messages.episodeUnit(item.episodeCount) : ''
@@ -602,8 +660,7 @@ export async function commandStatus(deps: HandlerContext, session: Session): Pro
       `时区: ${config.timeZone} (当前 ${formatDate(Date.now(), config.timeZone)})`,
       `推送形态: ${formatText}`,
       `本地化: ${digest.localizer.enabled ? `已开启 (${config.localize.titleStyle})` : '已关闭'}`,
-      // 用索引层的真实来源，不写死：`bangumi-data` 取不到时会退化为远程拉取，
-      // 而状态页正是用来诊断这种情况的，文案必须跟着变
+      // 用索引层的真实来源而非写死：`bangumi-data` 取不到时会退化为远程拉取，状态页正是用来诊断这种情况的
       `数据来源: ${describeIndexSource(digest.index.source)} (${digest.index.size} 部) / Bangumi`,
       `推送时刻: ${describeTimes(config)}`,
       `开关状态: 每日 ${channel?.dailyEnabled ? '开' : '关'} / 深夜档 ${channel?.nightEnabled ? '开' : '关'} / 本周 ${channel?.weeklyEnabled ? '开' : '关'} / 本季 ${channel?.seasonEnabled ? '开' : '关'}`,

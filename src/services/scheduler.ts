@@ -18,11 +18,9 @@ interface PushResult {
 }
 
 /**
- * 定时推送调度。
- *
- * 每分钟对表一次而不是用长定时器：所有时刻按配置时区换算，服务器时区、夏令时与
- * 休眠都不会让推送漂移。判定条件只要求「当天该时刻已过」，因此进程在推送时刻之后
- * 启动也能补上；当天是否真的发过由 `DispatchGuard` 的唯一键决定。
+ * 定时推送调度。对表而不是用长定时器：所有时刻按配置时区换算，服务器时区、夏令时与休眠都
+ * 不会让推送漂移。判定只要求「当天该时刻已过」，因此进程在推送时刻之后启动也能补上；
+ * 当天是否真的发过由 `DispatchGuard` 的唯一键决定。
  */
 export class Scheduler {
   private timer: (() => void) | null = null
@@ -83,10 +81,8 @@ export class Scheduler {
   }
 
   /**
-   * 开播提醒的独立轮询间隔。
-   *
-   * 调度器每 30 秒对表一次，但提醒没必要这么频繁——由 `updatePollMinutes`
-   * 控制实际频率（默认 10 分钟）。
+   * 开播提醒的独立轮询间隔：调度器对表更频繁，但提醒没必要，实际频率由
+   * `updatePollMinutes` 控制（默认 10 分钟）。
    */
   private reminderDue(now: number): boolean {
     const interval = this.config.push.updatePollMinutes * 60 * 1000
@@ -96,11 +92,8 @@ export class Scheduler {
   }
 
   /**
-   * 当前时刻已经过了哪些配置好的推送时刻。
-   *
-   * 只要求「已过」而不是「正好在这一分钟内」：否则进程在 08:00 之后启动、
-   * 或服务器休眠错过那一分钟，当天的推送就永远不会发生。
-   * 当天是否已经发过由 `DispatchGuard` 在逐频道发送时判断。
+   * 当前时刻已经过了哪些配置好的推送时刻。只要求「已过」而不是「正好在这一分钟内」：否则
+   * 进程在 08:00 之后启动、或服务器休眠错过那一分钟，当天的推送就永远不会发生。
    */
   private dueKinds(now: number): DigestKind[] {
     const kinds: DigestKind[] = []
@@ -146,10 +139,8 @@ export class Scheduler {
   }
 
   /**
-   * 向所有开启了该类型的频道推送。
-   *
-   * 每种类型每天只真正尝试一次，否则「时刻已过」会让它从推送时刻到当天结束
-   * 每分钟重复查库与构建。当天是否真的发过仍由逐频道的 `DispatchGuard` 决定。
+   * 向所有开启了该类型的频道推送。每种类型每天只真正尝试一次，否则「时刻已过」会让它从推送
+   * 时刻到当天结束每分钟重复查库与构建；当天是否真的发过仍由 `DispatchGuard` 决定。
    */
   async pushKind(kind: DigestKind, now = Date.now()): Promise<PushResult> {
     const result: PushResult = { kind, targets: 0, sent: 0, skipped: 0, failed: 0 }
@@ -222,10 +213,8 @@ export class Scheduler {
   }
 
   /**
-   * 订阅作品的开播提醒。
-   *
-   * 场次由周期规则推算，与定时列表推送面向不同时间点，也不受频道的列表开关影响：
-   * 只要订阅作品的开播时刻落进提前量窗口，就提醒一次。
+   * 订阅作品的开播提醒。场次由周期规则推算，与定时列表推送面向不同时间点，也不受频道的列表
+   * 开关影响：只要订阅作品的开播时刻落进提前量窗口，就提醒一次。
    */
   async pushUpdateReminders(now = Date.now()): Promise<PushResult> {
     const result: PushResult = { kind: 'sub', targets: 0, sent: 0, skipped: 0, failed: 0 }

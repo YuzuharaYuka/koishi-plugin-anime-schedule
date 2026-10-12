@@ -102,9 +102,8 @@ export const DEFAULT_SCORE_TTL_HOURS = 24
 /**
  * 显示评分所需的最少评价人数。
  *
- * 低于这个数就不显示评分：新番刚开播时可能只有一两个人投票，那个数字会随着样本增加
- * 剧烈变化（实测至高之力 1 票时是 7.0，156 票时是 6.1）。宁可留空，也不要给读者一个
- * 会误导人的数字。
+ * 低于此数不显示评分：新番开播初期样本极少，评分会随样本增加剧烈变化
+ * （实测至高之力 1 票时 7.0，156 票时 6.1）。留空优于给出误导性的数字。
  */
 export const MIN_SCORE_VOTES = 10
 
@@ -153,6 +152,21 @@ export const FONT_CANDIDATES: string[] = [
 ]
 
 /** 加粗字体候选，找不到时由绘制层用描边模拟粗体 */
+/**
+ * 兜底字体族候选。
+ *
+ * 与 `FONT_CANDIDATES` 的区别：那些是**主字体**（选一个用），这些是**补充**
+ * （全部注册，缺字形时按顺序回退）。`@napi-rs/canvas` 只在"字体族不存在"时回退，
+ * 族存在但缺字形就直接画豆腐块，所以补充族必须真的注册进来才有效。
+ * 名字要与 `render/fonts.ts` 的 `FALLBACK_FAMILIES` 一致。
+ */
+export const FALLBACK_FONT_CANDIDATES: string[] = [
+  'C:/Windows/Fonts/YuGothR.ttc',
+  'C:/Windows/Fonts/msgothic.ttc',
+  'C:/Windows/Fonts/simsun.ttc',
+  'C:/Windows/Fonts/NotoSansSC-VF.ttf',
+]
+
 export const BOLD_FONT_CANDIDATES: string[] = [
   'C:/Windows/Fonts/msyhbd.ttc',
   'C:/Windows/Fonts/Dengb.ttf',
@@ -165,11 +179,34 @@ export const BOLD_FONT_CANDIDATES: string[] = [
 /**
  * JPEG 编码质量。
  *
- * 时间表以文字与细线条为主，JPEG 的块状伪影在这种内容上比照片里明显得多。取 100
- * 是**无损**编码，文字边缘最锐利；体积比 92 大约多三成，但一张周表也就一兆出头，
- * 不值得为省这点流量牺牲清晰度。想压体积可以调低。
+ * 图片以文字与细线条为主，块状伪影比在照片上明显。取 100 为无损编码，文字边缘最锐利；
+ * 体积比 92 约多三成，可调低换取更小体积。
  */
 export const DEFAULT_JPEG_QUALITY = 100
+
+/**
+ * 超采样倍数。
+ *
+ * 画布按「逻辑尺寸 × 该值」建立后在上下文上做等比 `scale`，缩回目标尺寸时由更多采样
+ * 得出边缘像素。清晰度主要取决于此：各版面最小字号仅 10~11px，1× 下一个字不足十几个
+ * 像素，JPEG 质量再高也无法还原。
+ *
+ * 3 在密集的封面与小字上收益仍可见；5 是收益递减的上限。
+ */
+export const DEFAULT_SUPERSAMPLE = 3
+
+/** 超采样倍数的可选上限，与配置项的 `.max()` 保持一致 */
+export const MAX_SUPERSAMPLE = 5
+
+/**
+ * 每日更新表的日期偏移范围（天）。
+ *
+ * 配置项的 `.min()/.max()` 与 `normalizeConfig` 的钳制共用这两个值——
+ * 两处分开写时极易只改一处，导致「配置页能填、实际被悄悄夹回去」。
+ */
+export const DAILY_OFFSET_MIN = -7
+export const DAILY_OFFSET_MAX = 7
+
 /** 注册到 canvas 的字体族名，与 config.render.fontFamily 的默认值保持一致 */
 export const DEFAULT_FONT_FAMILY = 'Anime Schedule Sans'
 
@@ -185,40 +222,50 @@ export const DEFAULT_FONT_FAMILY = 'Anime Schedule Sans'
  */
 export const IMAGE_LAYOUT = {
   /** 统一外边距 */
-  padding: 24,
+  padding: 28,
   /** 页眉 / 页脚固定高度 */
   headerHeight: 120,
   footerHeight: 52,
 
   /** 周历表：七天并排的画布宽度 */
   weekWidth: 1680,
-  /** 单日时间轴（每日 / 深夜档）的画布宽度 */
-  timelineWidth: 900,
+  /**
+   * 单日时间轴（每日 / 深夜档）画布宽度。
+   *
+   * 等于「左边距 + 时刻栏 + 轨道 + 时刻↔卡片间距 + 卡片宽 + 右边距」，不留余量，
+   * 使「现在」虚线的终点与卡片右缘重合。
+   */
+  timelineWidth: 798,
   /** 卡片列表（list 排版）的画布宽度 */
   listWidth: 900,
   /** 本季封面网格的画布宽度，要放得下 10 列 */
   seasonWidth: 1680,
 
   // ---- 通用行卡片 ----
-  /** 行卡片高度（每日 / 列表排版）。容纳「标题 + 时刻 + 集数 + ID + 评分」五行 */
-  rowHeight: 112,
+  /** 行卡片高度：容纳固定的两行标题 + 一行元信息 */
+  rowHeight: 104,
+  /** 行卡片宽度，窄于画布，避免文字仅占左半、右侧留空 */
+  rowCardWidth: 640,
   /** 行卡片之间的间距 */
   rowGap: 8,
   /** 行卡片圆角与内边距 */
   rowRadius: 12,
-  rowPadding: 12,
+  rowPadding: 10,
   /** 行卡片封面高度，宽度按 1 : 1.4 推出 */
-  mediaHeight: 82,
+  mediaHeight: 92,
   /** 封面与文字之间的间距 */
   mediaGap: 14,
-  /** 卡片文字行间距。五行内容靠它撑开节奏，太小会挤成一团 */
+  /** 标题行高与固定行数：短标题也占两行，使元信息行在所有卡片上对齐 */
+  cardTitleLineHeight: 22,
+  cardTitleLines: 2,
+  /** 标题块与元信息行之间的间距 */
   cardLineGap: 6,
   /** 封面圆角 */
   mediaRadius: 6,
 
   // ---- 单日时间轴 ----
-  /** 时间轴轨道相对左边距的位置 */
-  timelineSpine: 50,
+  /** 左侧时刻栏宽度（内容左缘到轨道）。需容纳 `现在 18:30` 这类最长时刻文本，否则被画布左缘裁掉 */
+  timelineLabelWidth: 70,
   /** 轨道圆点半径 */
   timelineDot: 4,
   /** 时刻文字与轨道之间的间距 */
@@ -245,8 +292,7 @@ export const IMAGE_LAYOUT = {
   weekMediaHeight: 82,
 
   // ---- 卡片列表 ----
-  /** 列表卡片高度（与行卡片一致，两种排版观感统一） */
-  cardHeight: 112,
+  /** 列表卡片沿用行卡片高度，两种排版保持一致 */
   cardGap: 12,
   /** 两栏之间的间距 */
   cardColumnGap: 14,
@@ -277,17 +323,35 @@ export const IMAGE_THEME = {
   surface: '#ffffff',
   cardBorder: '#e6e8ef',
   divider: '#eef0f5',
-  /** 强调色：时刻、日期与「今天」高亮 */
-  accent: '#f6665f',
+  /**
+   * 强调色：时刻、日期、「今天」高亮，以及详情卡的已播集数与峰值柱。
+   *
+   * 取珊瑚红 `#e26d6d`——比纯红柔和，整张表看下来不刺眼；详情卡的实心块共用它，
+   * 于是「已播集数」与列表里的「已订阅」气泡是同一套视觉语言。
+   */
+  accent: '#e26d6d',
   /** 封面的底色（等比完整显示时留白的那一圈） */
   badge: '#eef1f7',
+  /** 强调色的浅色底：软胶囊用 */
+  accentSoft: '#fdeceb',
+  /** 未播集数 / 禁用态的浅灰底 */
+  inert: '#f3f4f6',
+  /** 未播集数的文字色，比 muted 更浅，明确表示「还没到」 */
+  inertText: '#9ca3af',
+  /** 未播集数的描边：仅靠底色时与白色卡片难以区分，需勾出轮廓 */
+  inertBorder: '#e5e7eb',
+  /** 评分柱的非峰值色 */
+  scoreBar: '#fecaca',
   title: '#1f2330',
   body: '#5a6172',
   muted: '#9aa1b1',
   onAccent: '#ffffff',
-  score: '#f0913c',
+  /** 评分：橙金色，全插件统一 */
+  score: '#e69a3a',
   /** 卡片投影：略深一点，白色卡片才从浅灰背景上立起来 */
   shadow: 'rgba(31, 35, 48, 0.10)',
+  /** 封面投影，比卡片投影更轻 */
+  coverShadow: 'rgba(0, 0, 0, 0.06)',
 }
 
 /**
@@ -525,7 +589,7 @@ export const RESPONSES = {
   databaseFailed: '数据库操作失败，请检查后台日志。',
   renderFailed: '图片渲染失败，已改用文本发送。',
   emptySearch: (keyword: string) => `未找到与 "${keyword}" 相关的作品，请尝试使用日文原名或更简短的关键词。`,
-  notFound: '未找到该作品，它可能不在 bangumi-data 索引里。',
+  notFound: '未找到该作品，可能不在 bangumi-data 索引中。',
 } as const
 
 /** 日志里出现的固定短语 */

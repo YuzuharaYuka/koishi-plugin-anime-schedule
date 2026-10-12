@@ -86,6 +86,8 @@ export function drawPill(
   options: { font: string; color: string; background?: string; paddingX?: number; height?: number },
 ): number {
   const paddingX = options.paddingX ?? 8
+  // drawPill 会改 font / fillStyle / textAlign / textBaseline，不 save/restore 会让后续文字整体偏移
+  ctx.save()
   ctx.font = options.font
   const width = ctx.measureText(text).width + paddingX * 2
   const height = options.height ?? 18
@@ -96,13 +98,11 @@ export function drawPill(
   ctx.textAlign = 'left'
   ctx.textBaseline = 'middle'
   ctx.fillText(text, x + paddingX, y + height / 2 + 0.5)
+  ctx.restore()
   return width
 }
 
-/**
- * 按像素宽度截断文本，超出时补省略号。
- * 二分查找测量次数为 O(log n)，比逐字拼接快得多。
- */
+/** 按像素宽度截断文本，超出补省略号（二分查找，O(log n) 次测量） */
 export function fitText(ctx: SKRSContext2D, text: string, maxWidth: number): string {
   if (!text) return ''
   if (maxWidth <= 0) return ''
@@ -131,9 +131,7 @@ export function initialOf(name: string): string {
   return (meaningful || trimmed).charAt(0)
 }
 
-/** 无封面时的占位块：浅色底 + 首字。
- * 比直接留白更整齐，也不会让整列看起来像缺图。
- */
+/** 无封面时的占位块：浅色底 + 首字，比直接留白整齐 */
 export function drawCoverPlaceholder(
   ctx: SKRSContext2D,
   name: string,
@@ -155,10 +153,8 @@ export function drawCoverPlaceholder(
 }
 
 /**
- * 按原始比例把封面完整装进给定区域（contain）。
- *
- * 时间表的缩略图比例与 Bangumi 原图不完全一致，用 cover 裁切会切掉标题或人脸，
- * 因此这里等比缩放后居中，空出来的部分留浅色底。返回实际绘制的尺寸。
+ * 按原始比例把封面完整装进给定区域（contain）：等比缩放后居中，空出的部分留浅色底。
+ * 缩略图比例与原图不一致，用 cover 裁切会切掉标题或人脸。返回实际绘制的尺寸。
  */
 export function drawContainImage(
   ctx: SKRSContext2D,
@@ -167,10 +163,20 @@ export function drawContainImage(
   y: number,
   width: number,
   height: number,
-  options: { radius?: number; background?: string; border?: boolean } = {},
+  options: { radius?: number; background?: string; border?: boolean; shadow?: boolean } = {},
 ): { width: number; height: number } {
   const radius = options.radius ?? 6
-  fillRoundRect(ctx, x, y, width, height, radius, options.background ?? THEME.badge)
+  // 投影画在底衬上（而不是裁切后的图片上），否则圆角外的阴影会被裁掉
+  if (options.shadow) {
+    ctx.save()
+    ctx.shadowColor = THEME.coverShadow
+    ctx.shadowBlur = 8
+    ctx.shadowOffsetY = 2
+    fillRoundRect(ctx, x, y, width, height, radius, options.background ?? THEME.badge)
+    ctx.restore()
+  } else {
+    fillRoundRect(ctx, x, y, width, height, radius, options.background ?? THEME.badge)
+  }
   if (!image.width || !image.height) return { width: 0, height: 0 }
 
   const scale = Math.min(width / image.width, height / image.height)
@@ -182,6 +188,11 @@ export function drawContainImage(
   ctx.save()
   roundRect(ctx, x, y, width, height, radius)
   ctx.clip()
+  // 封面源图常有 2000~4000px，而这里只画到几十像素，压缩比可达 40 倍。
+  // 插值的 `imageSmoothingQuality` 默认是 `'low'`，在这种比例的密集画面上会明显锯齿，
+  // 必须显式提到 `'high'`（`imageSmoothingEnabled` 默认已为 true）。
+  ctx.imageSmoothingEnabled = true
+  ctx.imageSmoothingQuality = 'high'
   ctx.drawImage(image as never, offsetX, offsetY, drawWidth, drawHeight)
   ctx.restore()
   if (options.border !== false) {

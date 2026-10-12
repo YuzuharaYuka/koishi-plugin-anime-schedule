@@ -1,29 +1,13 @@
 /**
  * AniList 播出数据查询。
  *
- * 「这部番还在播吗」「第几話什么时候播」两个问题都需要**外部权威数据**：靠 bangumi-data
- * 的周期规则推算无法区分「已完结」与「停更一周」，也无法表达首周多集连播。
+ * 「这部番还在播吗」「第几話什么时候播」需要**外部权威数据**：周期规则推算无法区分「已完结」
+ * 与「停更一周」，也无法表达首周多集连播。AniList 直接给出逐話时刻与 `status`，且
+ * bangumi-data 自带条目 ID，可按 ID 精确查询。
  *
- * AniList 直接给出：
- * - `airingSchedule`：**已播出与未播出的每一話及其时刻**（默认含未来场次）；
- * - `nextAiringEpisode`：下一話；
- * - `status` / `episodes` / `startDate` / `endDate`。
- *
- * 而 bangumi-data 自带 `aniList` 的条目 ID（约 8300 部），因此可以按 ID 精确查询、
- * 完全避开标题匹配的歧义。
- *
- * ## 缓存策略：只在内存里
- *
- * AniList 的[使用条款](https://docs.anilist.co/guide/terms-of-use)明确禁止把它当作
- * 「备份或数据存储服务」，也禁止批量囤积数据。因此**不落盘**：缓存只存在于进程内存中，
- * 重启即失效。代价很小——一次整季查询只需 3 次请求，日常一轮推送 2~4 次。
- *
- * ## 速率限制
- *
- * 官方文档写 90 次/分钟，但**实测响应头是 `x-ratelimit-limit: 30`**（文档也标注 API
- * 处于降级状态）。另有突发限流。超限会 429 并封禁 1 分钟，严重故障时整个 API 会返回
- * 403。因此这里做两件事：**串行 + 最小间隔**地发请求，以及收到 429 后**进入冷却**，
- * 冷却期内直接返回已有缓存，不再发请求。
+ * 缓存只在内存里（[使用条款](https://docs.anilist.co/guide/terms-of-use)禁止把它当数据存储
+ * 服务）。速率限制：文档写 90 次/分钟，**实测响应头是 `x-ratelimit-limit: 30`**，超限会 429
+ * 封禁 1 分钟、严重故障时 403，因此请求**串行 + 最小间隔**，429/403 后进入冷却、期间只返回缓存。
  */
 import type { Context, Logger } from 'koishi'
 import type { AiringState, AniListStatus } from '../types'
@@ -63,9 +47,7 @@ const QUERY = `query ($ids: [Int]) {
 
 /**
  * 按标题搜索候选，用于给「bangumi-data 没带 `aniList` ID」的条目补 ID。
- *
- * 返回的字段比按 ID 查询多出 `title` 与 `synonyms`，因为匹配要靠标题；
- * `startDate` 与 `airingSchedule` 用来做双重校验，避免匹配到同名的不同季。
+ * 多出的 `title` 与 `synonyms` 供匹配使用，`startDate` 与 `airingSchedule` 用于双重校验。
  */
 const SEARCH_QUERY = `query ($search: String, $perPage: Int) {
   Page(page: 1, perPage: $perPage) {
@@ -83,19 +65,14 @@ const SEARCH_QUERY = `query ($search: String, $perPage: Int) {
 const SEARCH_LIMIT = 8
 
 /**
- * 每个进程最多按标题搜索多少次。
- *
- * 按标题搜索只能一次一个请求（AniList 没有批量接口），而一次构建会调用
- * `airingStatesOf` 多次（每个构建入口一次），若只按「每次调用」限量，
- * 一次构建就可能发出几十个请求。这里改成按**进程**限量：搜过的结果（含
- * 「搜不到」）会一直留在内存里，因此这个额度是「整季总共要新认识多少部作品」，
- * 而不是「每次构建多少」。发布版自带离线映射表，正常运行时用不到这么多。
+ * 每个进程最多按标题搜索多少次。按标题搜索只能一次一个请求，而一次构建会多次调用
+ * `airingStatesOf`，因此按**进程**限量——它是「整季总共要新认识多少部作品」，而非「每次构建多少」。
+ * 搜过的结果（含「搜不到」）一直留在内存里。
  */
 const TITLE_SEARCH_BUDGET = 24
 
 /**
  * 播出数据查询器。
- *
  * 只负责「按 ID 取数据并缓存」；「据此决定怎么排期」由 `DigestService` 负责。
  */
 export class AiringStatusService {
@@ -103,9 +80,7 @@ export class AiringStatusService {
   private readonly memory = new Map<number, AiringState>()
   /**
    * 标题 → AniList 条目 ID 的补映射结果。
-   *
-   * 也是进程内缓存：bangumi-data 大约三分之一的条目没带 `aniList` ID，其中一部分
-   * 能在 AniList 按标题搜到。搜到之后记录下来，同一进程内不再重复搜索。
+   * 也是进程内缓存：bangumi-data 约三分之一的条目没带 `aniList` ID，搜到之后同一进程内不再重复搜索。
    */
   private readonly idByTitle = new Map<string, number | null>()
   /** 已经用掉的标题搜索次数，见 `TITLE_SEARCH_BUDGET` */
@@ -143,13 +118,9 @@ export class AiringStatusService {
   }
 
   /**
-   * 按标题给缺失 `aniList` ID 的条目补一个 ID。
-   *
-   * bangumi-data 大约三分之一的条目没带该 ID，其中一部分能在 AniList 按标题搜到。
-   * 搜到就用 AniList 的逐話時刻排期，搜不到就返回 null，让调用方退回周期规则的推算。
-   *
-   * 结果（含「搜不到」）在进程内缓存，同一部作品只搜一次。
-   * 校验交给 `matchByTitle`：标题相等 + 首播日期相近，两者缺一不可。
+   * 按标题给缺失 `aniList` ID 的条目补一个 ID：补上就用 AniList 的逐話時刻排期，搜不到返回
+   * null 让调用方退回周期推算。结果（含「搜不到」）在进程内缓存。
+   * 校验交给 `matchByTitle`：标题相等 + 首播日期相近，缺一不可。
    */
   async resolveByTitle(target: MatchTarget): Promise<number | null> {
     const key = normalizeTitle(target.title)
@@ -195,11 +166,12 @@ export class AiringStatusService {
   }
 
   /**
-   * 批量取回数据，返回「AniList 条目 ID → 数据」。
+   * 批量取 AniList 状态，未命中的 ID 不会出现在结果里（调用方按「取不到就不判定」处理）。
    *
-   * 未命中的 ID 不会出现在结果里；调用方按「取不到就不判定」处理。
+   * @param now 判定「已播出到第几话」的基准时刻。由调用方注入而非就地取 `Date.now()`，
+   *   否则同一份数据在两次构建之间会得到不同的 `airedEpisodes`，快照无法复现。
    */
-  async resolve(aniListIds: number[], ttlDays: number): Promise<Map<number, AiringState>> {
+  async resolve(aniListIds: number[], ttlDays: number, now = Date.now()): Promise<Map<number, AiringState>> {
     const result = new Map<number, AiringState>()
     const wanted: number[] = []
     const seen = new Set<number>()
@@ -230,7 +202,7 @@ export class AiringStatusService {
       const media = await this.enqueue(() => this.fetchBatch(batch))
       if (media === null) break // 限流或服务不可用，停止后续批次
       for (const item of media) {
-        const entry = this.toState(item)
+        const entry = this.toState(item, now)
         if (!entry) continue
         ok++
         this.memory.set(entry.aniListId, entry)
@@ -263,7 +235,7 @@ export class AiringStatusService {
     return run.catch(() => null)
   }
 
-  private toState(media: AniListMedia): AiringState | null {
+  private toState(media: AniListMedia, now: number): AiringState | null {
     if (!Number.isFinite(media?.id)) return null
     const toIso = (value?: { year?: number | null; month?: number | null; day?: number | null } | null) => (
       value?.year && value?.month && value?.day
@@ -292,7 +264,6 @@ export class AiringStatusService {
       deduped.push(item)
     }
 
-    const now = Date.now()
     const aired = deduped.filter((item) => item.atMs <= now)
     const lastAired = aired[aired.length - 1] ?? null
 
@@ -318,10 +289,8 @@ export class AiringStatusService {
   }
 
   /**
-   * 处理一次失败的请求。
-   *
-   * 返回 `true` 表示「进入了冷却，调用方应当停止本次查询」（限流或服务被停用）；
-   * `false` 表示普通失败，调用方按「取不到就跳过」处理。
+   * 处理一次失败的请求。返回 `true` 表示「进入了冷却，调用方应当停止本次查询」（限流或
+   * 服务被停用）；`false` 表示普通失败，调用方按「取不到就跳过」处理。
    */
   private handleRequestError(error: unknown): boolean {
     const status = (error as { response?: { status?: number } })?.response?.status
@@ -342,9 +311,7 @@ export class AiringStatusService {
   }
 
   /**
-   * 取一批数据。
-   *
-   * 返回 `null` 表示「这次不该继续请求」（限流冷却或服务不可用），
+   * 取一批数据。返回 `null` 表示「这次不该继续请求」（限流冷却或服务不可用），
    * 空数组表示「请求成功但没有匹配的条目」。
    */
   private async fetchBatch(ids: number[]): Promise<AniListMedia[] | null> {

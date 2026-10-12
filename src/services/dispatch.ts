@@ -21,9 +21,7 @@ export function updateKey(tid: string, atMs: number): string {
 
 /**
  * 文本形态的投递，按平台能力选择普通文本或合并转发。
- *
- * 合并转发的判断依据是适配器是否声明 `message.forward`，同时要求处于群聊：
- * 私聊里合并转发没有意义，QQ 上也会被降级成普通消息。
+ * 合并转发的依据是适配器是否声明 `message.forward`，同时要求处于群聊：私聊里没有意义。
  */
 export async function sendTextDigest(
   bot: Bot | undefined,
@@ -37,14 +35,11 @@ export async function sendTextDigest(
 }
 
 /**
- * 推送去重。
- *
- * `anime_dispatch` 的 `(platform, channelId, digestKind, dedupeKey)` 唯一，抢到记录
+ * 推送去重。`anime_dispatch` 的 `(platform, channelId, digestKind, dedupeKey)` 唯一，抢到记录
  * 才算「本次推送归我发」。
  *
- * 不能只做 `upsert`：唯一键被命中时数据库只更新既有行，于是每次调用都会「成功」，
- * 重启或重复调度就会重发。因此这里先查后写，并用按 key 串行的队列避免同进程内的
- * 并发插队（跨进程由数据库唯一键负责）。
+ * 不能只做 `upsert`：唯一键被命中时数据库只更新既有行，于是每次调用都会「成功」，重启或重复
+ * 调度就会重发。因此先查后写，并用按 key 串行的队列避免同进程内的并发插队。
  */
 export class DispatchGuard {
   private readonly queues = new Map<string, Promise<unknown>>()
@@ -142,12 +137,9 @@ export class Dispatcher {
   }
 
   /**
-   * 投递一条消息。
-   *
-   * 受理机器人找不到时（记录里的 `botId` 已下线、换了账号）本来就走广播；此外
-   * `sendMessage` 自身失败也要退到广播一次：适配器与平台的连接可能只是暂时不可用
-   * （例如 NapCat / OneBot 端没起来，`bot._request` 还没初始化），此时同一频道上
-   * 其它已连接的分身仍能把消息发出去。两条路都失败才向上抛，由调用方释放去重记录。
+   * 投递一条消息。受理机器人找不到时（`botId` 已下线或换号）本来就走广播；`sendMessage` 自身
+   * 失败也要退到广播一次：适配器与平台的连接可能只是暂时不可用（如 NapCat / OneBot 端没起来），
+   * 此时同一频道上其它已连接的分身仍能把消息发出去。两条路都失败才向上抛，由调用方释放去重记录。
    */
   private async send(channel: AnimeChannel, content: h.Fragment, bot: Bot | undefined): Promise<void> {
     const scope = [`${channel.platform}:${channel.channelId}`]

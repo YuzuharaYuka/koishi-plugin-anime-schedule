@@ -1,57 +1,21 @@
 /**
- * 纯文本形态的渲染。
+ * 纯文本形态的渲染，与图片形态共用同一份 `Digest`，差别只在排布——文本只能靠符号与缩进分区。
  *
- * 与图片形态共用同一份 `Digest`，因此两者列出的作品、时刻、集数完全一致；
- * 差别只在**信息的排布**上——图片能靠颜色与留白分区，文本只能靠符号与缩进。
- *
- * ## 版式约定
- *
- * ```
- * 今日番剧更新 (10/1周四)
- * 共 7 部作品，其中 3 部为深夜档
- *
- * 【今日播出】
- * 00:00 第 53 话
- *   考拉绘日记
- *   ID:564980  评分 5.0
- *
- * 00:15 第 12 话
- *   盗墓王
- *   ID:621835  评分 4.5
- * ```
- *
- * 四条规则：
- *
- * 1. **一行放一个语义块**。时刻与集数留在首行（信息最密、最需要对齐），标题单独占一行
- *    并缩进两格——中文标题动辄二三十字，和时刻挤在一行必然折行，折行后时刻就淹没在
- *    文字里了。ID 与评分再缩进一层，便于扫读时跳过。
- * 2. **集数走 `episodeUnit`**（`第 53 话`），不再用 `#53`。整个界面的其它地方都是中文，
- *    `#` 是英文记法，混在一起不好读。
- * 3. **一次性放送不显示集数**：剧场版、特别篇没有「第几话」的概念，`episodeCount` 恒为 1，
- *    写出来是噪声。这与图片卡片的处理保持一致。
- * 4. **条目之间空一行**。三条一组的块状结构如果首尾相连，读者分不清哪一行属于哪一部；
- *    空行是最省字符的分隔手段，一屏仍能放下四五部。
- *
- * 季表用同一套版式，只把首行的时刻换成**完整日期**（`7/7周二 23:00`）——它是一览，
- * 读者最先想知道「什么时候开播」，而条目散在整个季度里，光有时刻没法定位。相应地季表
- * **不套分组标题**：日期已经在首行，再套一层 `【10/11周日】` 是重复信息，还会出现
- * 「首播在 9/27 的条目落在 `【10/2周五】` 组里」（因为它下次播出在那天）这种对不上的情况。
+ * 一行放一个语义块（时刻与集数留首行，标题单独缩进一行，ID 与评分再缩进一层）；
+ * 集数走 `episodeUnit`（`第 53 话`）；一次性放送不显示集数；条目之间空一行。
+ * 季表首行换成完整日期，且不再套 `【10/11周日】` 分组标题——日期已在首行，套了还会与条目日期对不上。
  */
 import { h } from 'koishi'
-import { DIGEST_LABELS, RESPONSES, getMessages } from '../constants'
+import { DIGEST_LABELS, getMessages } from '../constants'
 import type { Config } from '../config'
 import type { Digest, DigestGroup, DigestItem } from '../types'
 import type { SubjectInfo } from '../services/info'
 import { truncate } from '../utils'
 
-/** 标题最多显示多少个字，超出补省略号（与命令里 `anime.next` 的宽度保持一致） */
+/** 标题最多显示多少个字，超出补省略号（与命令里 `anime.next` 的宽度一致） */
 const TITLE_MAX = 60
 
-/**
- * 作品详情卡的纯文本形态。
- *
- * 与图片版信息一致，只是排布改用缩进与分隔线：图片能靠颜色分区，文本只能靠符号。
- */
+/** 作品详情卡的纯文本形态：信息与图片版一致，排布改用缩进与分隔线 */
 export function renderInfoText(info: SubjectInfo, config: Config): string {
   const messages = getMessages(config.locale)
   const status = info.status === 'airing' ? messages.infoAiring
@@ -88,12 +52,9 @@ export function renderInfoText(info: SubjectInfo, config: Config): string {
 }
 
 /**
- * 搜索结果的文本形态。
+ * 搜索结果的文本形态：每条带评分与「已完结」标记，读者不必逐个点进去就能判断值不值得订阅。
  *
- * 带上评分与「已完结」标记，读者不必逐个点进去就能判断值不值得订阅——
- * 这正是搜索时最需要的两条信息。想看完整的简介与逐集进度时再用 `anime.info`。
- *
- * @param now 判定「已完结」的基准时刻。不取 `Date.now()`，这样调用方能把时钟钉住。
+ * @param now 判定「已完结」的基准时刻。不取 `Date.now()`，以便调用方钉住时钟。
  */
 export function renderSearchText(items: DigestItem[], keyword: string, config: Config, now = Date.now()): string {
   const messages = getMessages(config.locale)
@@ -106,19 +67,26 @@ export function renderSearchText(items: DigestItem[], keyword: string, config: C
       // 索引里给了结束日期且已经过去 → 已完结；没有结束日期的是长期番或在播
       item.endMs !== null && item.endMs < now ? messages.infoFinished : '',
     ].filter(Boolean).join(' · ')
-    const head = `${index + 1}. [ID:${item.bgmId ?? '-'}] ${truncate(item.name, TITLE_MAX)}`
+    const head = `${index + 1}. [ID:${item.bgmId ?? '-'}] ${truncate(titleOf(item), TITLE_MAX)}`
     return meta ? `${head}\n    ${meta}` : head
   })
   return [messages.searchHeader(items.length, keyword), ...lines].join('\n')
 }
 
+/**
+ * 纯文本标题。`both` 时把原名拼回括号：文本无字号与颜色之分，
+ * 不能像图片那样用浅灰小字区分。
+ */
+function titleOf(item: DigestItem): string {
+  return item.titleOriginal ? `${item.name} (${item.titleOriginal})` : item.name
+}
+
 function formatItem(item: DigestItem, season: boolean, config: Config): string {
   const messages = getMessages(config.locale)
   const episode = item.recurring && item.episodeCount > 0 ? messages.episodeUnit(item.episodeCount) : ''
-  // 季表是一览，读者最先想知道「什么时候开播」，因此首行给完整日期；其余三张表按天分组，
-  // 日期已经在分组标题上，首行只留时刻。
+  // 季表首行给完整日期（读者最先想知道「什么时候开播」）；其余表按天分组，日期已在分组标题上，只留时刻
   const lead = season ? (item.airLabel || item.time) : item.time
-  const lines = [episode ? `${lead} ${episode}` : lead, `  ${truncate(item.name, TITLE_MAX)}`]
+  const lines = [episode ? `${lead} ${episode}` : lead, `  ${truncate(titleOf(item), TITLE_MAX)}`]
 
   const parts: string[] = []
   if (item.bgmId !== null) parts.push(`ID:${item.bgmId}`)
@@ -129,13 +97,7 @@ function formatItem(item: DigestItem, season: boolean, config: Config): string {
   return lines.join('\n')
 }
 
-/**
- * 分组。
- *
- * 季表**不再按天分组**：它的条目本来就散在整个季度里，而首行已经带了完整日期，
- * 再套一层 `【10/11周日】` 是重复信息，还会让标签与条目日期对不上（如首播在 9/27 的
- * 条目落在 `【10/2周五】` 组里，因为它「下次播出」在那天）。
- */
+/** 分组；季表不按天分组：首行已带完整日期，再套一层 `【10/11周日】` 是重复信息，还会与条目日期对不上 */
 function formatGroup(group: DigestGroup, config: Config, season: boolean): string {
   const body = group.items.map((item) => formatItem(item, season, config)).join('\n\n')
   if (season || !group.label) return body
@@ -143,10 +105,7 @@ function formatGroup(group: DigestGroup, config: Config, season: boolean): strin
 }
 
 /**
- * 文本形态的推送渲染。
- *
- * 返回消息元素数组，调用方按平台能力选择直接发送或合并转发：
- * 第一项是列表头 + 统计行，之后每一项是一个分组，最后是数据来源。
+ * 文本形态的推送渲染：返回消息元素数组（列表头 + 统计行，之后每个分组一项，最后是数据来源）。
  * 相邻元素之间插入换行，否则平台会把它们首尾拼在同一行。
  */
 export function renderText(config: Config, digest: Digest): h[] {
@@ -167,12 +126,7 @@ export function renderText(config: Config, digest: Digest): h[] {
   return elements
 }
 
-/**
- * 合并转发：整体作为一条可展开的聊天记录。
- *
- * 第一条是概览，之后每个分组一条，避免长列表在群里一条条刷屏。
- * 平台或适配器不支持 `message.forward` 时由调用方退回普通文本。
- */
+/** 合并转发：第一条概览、之后每个分组一条，避免长列表刷屏；平台不支持 `message.forward` 时由调用方退回普通文本 */
 export function buildForward(config: Config, digest: Digest): h {
   const messages = getMessages(config.locale)
   const season = digest.kind === 'season'

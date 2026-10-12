@@ -20,29 +20,11 @@ import {
   type Theme,
 } from './canvas'
 
-/** 行卡片里的一块文字（时刻 / 标题 / 次要信息） */
-interface CardLine {
-  text: string
-  color: string
-  size: number
-  bold?: boolean
-}
 
 /**
- * 风格化图片渲染器。
- *
- * 四种版面共用同一套版式规则：页眉是标题 + 副标题 + 统计 + 时区，页脚是数据来源；
+ * 风格化图片渲染器。四种版面共用页眉（标题 + 副标题 + 统计 + 时区）与页脚（数据来源），
  * 卡片文字顺序与配色统一为「标题 → 时间 → `ID:xxx` → 评分」。
- *
- * | 版面 | 用于 |
- * | :--- | :--- |
- * | 单日时间轴 | 每日 / 深夜档 |
- * | 七日周历 | 本周 |
- * | 卡片列表 | `output.layout = list` |
- * | 封面网格 | 本季，固定每行 10 部 |
- *
- * 封面统一按 `1 : 1.4` 等比完整显示，文字块的竖直位置只由版式常量决定，
- * 因此同一版面的每一条都对齐在同一条基线上。
+ * 封面统一按 `1 : 1.4` 等比完整显示，文字块的竖直位置只由版式常量决定，故同一版面基线一致。
  */
 /** 「现在」分界线占用的高度，与 drawNowMarker 保持一致 */
 const NOW_MARKER_HEIGHT = 26
@@ -50,6 +32,11 @@ const NOW_MARKER_HEIGHT = 26
 export class Renderer {
   private readonly covers: CoverStore
   private ready = false
+  /**
+   * 超采样倍数。画布按「逻辑尺寸 × 该值」建立并在上下文上等比 `scale`，各版面坐标
+   * 无需改动；文字按更高像素密度栅格化，缩回目标尺寸后笔画更锐利。
+   */
+  private readonly scale: number
 
   constructor(
     ctx: Context,
@@ -58,6 +45,7 @@ export class Renderer {
     /** 出网客户端（含代理），用于下载封面 */
     http: HttpClient,
   ) {
+    this.scale = Math.max(1, config.render.supersample)
     this.covers = new CoverStore(ctx, logger, config.render.coverConcurrency, config.render.coverCacheDays, http)
   }
 
@@ -79,7 +67,7 @@ export class Renderer {
     const canvas = await this.draw(payload)
     const encoded = await canvas.encode('jpeg', this.config.render.jpegQuality)
     this.logger.debug(
-      '[render] %s 出图完成 (%dms)，尺寸 %dx%d，%d bytes (jpeg q=%d)',
+      '[render] %s 出图完成 (%dms)，尺寸 %dx%d (超采样 %dx)，%d bytes (jpeg q=%d)',
       payload.kind,
       Date.now() - started,
       canvas.width,
@@ -91,10 +79,8 @@ export class Renderer {
   }
 
   /**
-   * 渲染单部作品的详情卡（`anime.info`）。
-   *
-   * 与推送表共用同一份封面缓存与字体，但排版完全独立——见 `render/info.ts`。
-   * 封面单独取一张，不复用推送表的批量加载。
+   * 渲染单部作品的详情卡（`anime.info`）：与推送表共用封面缓存与字体，但排版完全独立
+   * （见 `render/info.ts`），封面单独取一张、不复用推送表的批量加载。
    */
   async renderInfo(info: SubjectInfo): Promise<Buffer> {
     this.init()
@@ -107,8 +93,8 @@ export class Renderer {
       cover,
       footer: this.messages.infoUpdated(formatMoment(Date.now(), this.config.timeZone, this.messages.weekdayNames)),
     })
-    const canvas = createCanvas(card.width, card.height)
-    card.draw(canvas.getContext('2d'))
+    const { canvas, ctx } = this.createSurface(card.width, card.height)
+    card.draw(ctx)
     const encoded = await canvas.encode('jpeg', this.config.render.jpegQuality)
     this.logger.debug(
       '[render] info 出图完成 (%dms)，尺寸 %dx%d，%d bytes',
@@ -126,70 +112,19 @@ export class Renderer {
 
   // #region 通用绘制
 
-  /** 空白画布：统一底色 */
+  /**
+   * 空白画布：统一底色，并按超采样倍数放大物理尺寸。
+   *
+   * `width` / `height` 仍是逻辑尺寸，各版面照旧用逻辑坐标排版，由 `ctx.scale` 映射到实际像素。
+   */
   private createSurface(width: number, height: number): { canvas: Canvas; ctx: SKRSContext2D } {
-    const canvas = createCanvas(width, height)
+    const s = this.scale
+    const canvas = createCanvas(Math.round(width * s), Math.round(height * s))
     const ctx = canvas.getContext('2d')
+    if (s !== 1) ctx.scale(s, s)
     ctx.fillStyle = THEME.background
     ctx.fillRect(0, 0, width, height)
     return { canvas, ctx }
-  }
-
-  /**
-   * 行卡片内容块：封面在左、文字在右。
-   *
-   * `left` 是内容块左边缘，`centreY` 是竖直中心；封面高度与行距都由版式常量决定，
-   * 因此不同条目的标题、时间、ID、评分落在同一条基线上。
-   */
-  private drawCardBody(
-    ctx: SKRSContext2D,
-    item: DigestItem,
-    cover: Canvas | null,
-    left: number,
-    centreY: number,
-    width: number,
-    lines: CardLine[],
-  ): void {
-    const L = IMAGE_LAYOUT
-    const mediaHeight = L.mediaHeight
-    const mediaWidth = Math.round(mediaHeight * L.seasonCoverRatio)
-    const top = centreY - mediaHeight / 2
-
-    if (this.config.output.showCover) {
-      if (cover) drawContainImage(ctx, cover, left, top, mediaWidth, mediaHeight, { radius: L.mediaRadius })
-      else drawCoverPlaceholder(ctx, item.name, left, top, mediaWidth, mediaHeight, L.mediaRadius)
-    }
-
-    const textX = this.config.output.showCover ? left + mediaWidth + L.mediaGap : left
-    this.drawCardLines(ctx, textX, centreY, Math.max(24, left + width - textX), lines)
-  }
-
-  /**
-   * 卡片文字块：与封面一起整体居中，行距固定。
-   *
-   * 行数与行距都由版式常量给定，因此每张卡片的标题、评分、ID、集数
-   * 都落在同样的基线上，与标题长短、有没有评分无关。
-   */
-  private drawCardLines(
-    ctx: SKRSContext2D,
-    left: number,
-    centreY: number,
-    width: number,
-    lines: CardLine[],
-  ): void {
-    if (!lines.length) return
-    const gap = IMAGE_LAYOUT.cardLineGap
-    const total = lines.reduce((sum, line) => sum + line.size + gap, 0) - gap
-    let cursor = centreY - total / 2
-
-    ctx.textAlign = 'left'
-    ctx.textBaseline = 'middle'
-    for (const line of lines) {
-      ctx.font = font(line.size, line.bold)
-      ctx.fillStyle = line.color
-      ctx.fillText(fitText(ctx, line.text, width), left, cursor + line.size / 2)
-      cursor += line.size + gap
-    }
   }
 
   /** 评分文本，未开启评分展示时为空 */
@@ -198,17 +133,14 @@ export class Renderer {
     return item.score
   }
 
-  /** `ID:253104`，与 `anime.sub <ID>` 的参数写法一致 */
+  /** `ID:400602`，与 `anime.sub <ID>` 的参数写法一致 */
   private idText(item: DigestItem): string {
     return item.bgmId === null ? '' : `ID:${item.bgmId}`
   }
 
   /**
-   * 条目的「已订阅」气泡。
-   *
-   * 各版面共用；调用方给的是**气泡右边缘**的位置，因此气泡向左展开，
-   * 不会盖住右侧的 ID 或标题。`bottom` 为 `true` 时 `y` 视为气泡底边，
-   * 用于把气泡贴在卡片右下角。
+   * 条目的「已订阅」气泡，各版面共用。调用方给的是**气泡右边缘**，气泡向左展开，
+   * 不会盖住右侧的 ID 或标题；`bottom` 为 `true` 时 `y` 视为底边，用于贴在卡片右下角。
    */
   private drawSubscribedBadge(
     ctx: SKRSContext2D,
@@ -271,9 +203,7 @@ export class Renderer {
 
   /**
    * 单日时间轴：左侧一条竖直轨道，右侧行卡片按播出时刻自上而下排列。
-   *
-   * 深夜档覆盖「今晚 + 次日凌晨」，凌晨场次用 24 小时制续写（次日 01:00 记作 25:00），
-   * 跨过午夜时在轨道上插一个日期节点，读者不会把凌晨场次误认成当天上午。
+   * 深夜档覆盖「今晚 + 次日凌晨」，凌晨场次用 24 小时制续写（次日 01:00 记作 25:00）。
    */
   private async drawTimeline(payload: RenderPayload): Promise<Canvas> {
     const L = IMAGE_LAYOUT
@@ -284,46 +214,73 @@ export class Renderer {
 
     const covers = await this.loadCovers(all)
     const width = L.timelineWidth
-    // 只有一组时不画日期节点，高度按实际结构计算
+    // 只有一组时不画日期节点
     const showDayHeader = groups.length > 1
-    // 「现在」分界线自己占一段高度，只有单日/深夜档会画
     const showNow = payload.kind !== 'weekly'
-    const height = L.headerHeight
-      + all.length * (L.rowHeight + L.rowGap)
-      + (showDayHeader ? groups.length * L.timelineDayHeaderHeight : 0)
-      + (showNow ? NOW_MARKER_HEIGHT : 0)
-      + L.footerHeight
+    const spineX = L.padding + L.timelineLabelWidth
 
-    const { canvas, ctx } = this.createSurface(width, height)
-    this.drawHeader(ctx, payload, width)
+    // 先排出各元素的中线：主轴连线、圆点与「现在」标记都以它定位，必须算完再画
+    type Element =
+      | { kind: 'day'; group: DigestGroup; centre: number }
+      | { kind: 'item'; item: DigestItem; centre: number }
+      | { kind: 'now'; centre: number }
 
-    const spineX = L.padding + L.timelineSpine
+    const elements: Element[] = []
+    const dayGap = showDayHeader ? L.timelineDayHeaderHeight : 0
+    const separatorGap = L.rowGap * 3
     let cursor = L.headerHeight + L.rowGap
-    let index = 0
-    let nowDrawn = false
+    let nowPlaced = false
 
     for (const group of groups) {
       if (showDayHeader) {
-        this.drawTimelineDayHeader(ctx, group, spineX, cursor, width - L.padding - spineX)
-        cursor += L.timelineDayHeaderHeight
+        elements.push({ kind: 'day', group, centre: cursor + L.timelineDayHeaderHeight / 2 })
+        cursor += dayGap
       }
       for (const item of group.items) {
-        // 画在第一条尚未播出的条目之前；全部已播时画在末尾。
-        // 插入前先把光标下移半个行距，让虚线落在「上一条卡片底」与「下一条卡片顶」的正中，
-        // 而不是紧贴上一条。标记自带的高度正好抵掉这半个行距，总高因此不必重算。
-        if (showNow && !nowDrawn && item.atMs > payload.now) {
-          nowDrawn = true
-          cursor = this.drawNowMarker(ctx, payload.now, spineX, cursor + L.rowGap / 2, width)
+        // 「现在」插在第一条未播出的条目之前
+        if (showNow && !nowPlaced && item.atMs > payload.now) {
+          nowPlaced = true
+          elements.push({ kind: 'now', centre: cursor + NOW_MARKER_HEIGHT / 2 })
+          cursor += NOW_MARKER_HEIGHT + separatorGap
         }
-        const y = cursor
-        this.drawTimelineSpine(ctx, spineX, y - L.rowGap, y + L.rowHeight, index === 0)
-        this.drawTimelineEntry(ctx, item, covers.get(item.coverUrl) ?? null, spineX, y, width, night)
+        elements.push({ kind: 'item', item, centre: cursor + L.rowHeight / 2 })
         cursor += L.rowHeight + L.rowGap
-        index++
       }
     }
-    if (showNow && !nowDrawn) {
-      this.drawNowMarker(ctx, payload.now, spineX, cursor, width)
+    // 全部已播时「现在」落在末尾，与末条留出间距
+    if (showNow && !nowPlaced) {
+      cursor += separatorGap
+      elements.push({ kind: 'now', centre: cursor + NOW_MARKER_HEIGHT / 2 })
+      cursor += NOW_MARKER_HEIGHT
+    }
+
+    const height = cursor + L.footerHeight
+    const { canvas, ctx } = this.createSurface(width, height)
+    this.drawHeader(ctx, payload, width)
+
+    // 主轴：首尾元素中心之间连续绘制，中途不断开
+    const centres = elements.map((element) => element.centre)
+    const first = centres[0] ?? 0
+    const last = centres[centres.length - 1] ?? first
+    ctx.strokeStyle = L.timelineLine
+    ctx.lineWidth = 2
+    ctx.beginPath()
+    ctx.moveTo(spineX, first)
+    ctx.lineTo(spineX, last)
+    ctx.stroke()
+
+    // 主轴之上绘制各元素（圆点覆盖主轴）
+    for (const element of elements) {
+      if (element.kind === 'day') {
+        this.drawTimelineDayHeader(ctx, element.group, spineX, element.centre, width - L.padding - spineX)
+      } else if (element.kind === 'now') {
+        this.drawNowMarker(ctx, payload.now, spineX, element.centre, width)
+      } else {
+        this.drawTimelineEntry(
+          ctx, element.item, covers.get(element.item.coverUrl) ?? null,
+          spineX, element.centre - L.rowHeight / 2, width, night,
+        )
+      }
     }
 
     this.drawFooter(ctx, payload, width, height)
@@ -333,73 +290,65 @@ export class Renderer {
   /**
    * 时间轴上的「现在」分界线。
    *
-   * 画成一条横贯的虚线 + 右端的时刻，读者一眼就能看出上下哪边已经播了。
-   * 参考 bangumi.online 的播出时间轴：没有这条线时，`00:00` 的场次和 `23:00` 的场次
-   * 长得一模一样，用户得自己对表才知道现在几点。
-   *
-   * @returns 画完之后的新光标位置（线自己占一段高度）
+   * 圆点位于主轴（`x = spineX`），虚线由圆点右侧引至内容区右缘（即卡片右缘）。
+   * 时刻无底框，右对齐于主轴左侧，与各条目时刻同列同右边界。
    */
   private drawNowMarker(
     ctx: SKRSContext2D,
     now: number,
     spineX: number,
-    y: number,
+    centreY: number,
     width: number,
-  ): number {
+  ): void {
     const L = IMAGE_LAYOUT
-    const height = NOW_MARKER_HEIGHT
-    const centreY = y + height / 2
 
-    // 左端圆点：与时间轴的圆点同一尺寸，视觉上属于同一条轴
+    // 圆点带白色描边，覆盖主轴后仍可辨识为同一轴上的节点
     ctx.beginPath()
-    ctx.arc(spineX, centreY, 5, 0, Math.PI * 2)
+    ctx.arc(spineX, centreY, L.timelineDot + 1, 0, Math.PI * 2)
     ctx.fillStyle = THEME.accent
     ctx.fill()
     ctx.lineWidth = 2.5
     ctx.strokeStyle = THEME.surface
     ctx.stroke()
 
-    const left = spineX + 14
-    const right = width - L.padding
+    // 虚线：圆点右侧至内容区右缘（即卡片右缘）
     ctx.save()
     ctx.setLineDash([4, 4])
     ctx.lineWidth = 1.5
     ctx.strokeStyle = THEME.accent
     ctx.beginPath()
-    ctx.moveTo(left, centreY)
-    ctx.lineTo(right, centreY)
+    ctx.moveTo(spineX + 12, centreY)
+    ctx.lineTo(width - L.padding, centreY)
     ctx.stroke()
     ctx.restore()
 
-    // 时刻压在虚线上、靠右，底色垫一层让线条不穿过文字
-    const label = this.messages.nowLabel(formatClock(now, this.config.timeZone))
-    ctx.font = font(FONT_SIZE.cardMeta, true)
-    const textWidth = ctx.measureText(label).width
-    const boxX = right - textWidth - 10
-    fillRoundRect(ctx, boxX, centreY - 9, textWidth + 10, 18, 9, THEME.surface)
+    // 时刻：与条目时刻同右边界（贴主轴左侧），不加底框
+    ctx.font = font(FONT_SIZE.cardTime, true)
     ctx.fillStyle = THEME.accent
-    ctx.textAlign = 'left'
+    ctx.textAlign = 'right'
     ctx.textBaseline = 'middle'
-    ctx.fillText(label, boxX + 5, centreY + 0.5)
-
-    return y + height
+    ctx.fillText(this.messages.nowLabel(formatClock(now, this.config.timeZone)), spineX - L.timelineTimeGap, centreY)
+    ctx.textAlign = 'left'
+    ctx.textBaseline = 'top'
   }
 
-  /** 时间轴上的日期节点：圆点 + 日期 + 条目数 */
+  /** 时间轴日期节点：圆点 + 日期 + 条目数。`centreY` 由调用方给定，保证落在主轴上 */
   private drawTimelineDayHeader(
     ctx: SKRSContext2D,
     group: DigestGroup,
     spineX: number,
-    y: number,
+    centreY: number,
     width: number,
   ): void {
     const L = IMAGE_LAYOUT
-    const centreY = y + L.timelineDayHeaderHeight / 2
 
     ctx.beginPath()
     ctx.arc(spineX, centreY, L.timelineDot + 2, 0, Math.PI * 2)
     ctx.fillStyle = THEME.accent
     ctx.fill()
+    ctx.lineWidth = 2.5
+    ctx.strokeStyle = THEME.surface
+    ctx.stroke()
 
     ctx.textAlign = 'left'
     ctx.textBaseline = 'middle'
@@ -414,17 +363,21 @@ export class Renderer {
     ctx.textAlign = 'left'
   }
 
-  /** 时间轴主线，首条之上不画线 */
-  private drawTimelineSpine(ctx: SKRSContext2D, x: number, from: number, to: number, first: boolean): void {
-    ctx.strokeStyle = IMAGE_LAYOUT.timelineLine
-    ctx.lineWidth = 2
-    ctx.beginPath()
-    ctx.moveTo(x, first ? (from + to) / 2 : from)
-    ctx.lineTo(x, to)
-    ctx.stroke()
-  }
-
-  /** 时间轴上的单个条目：时刻 + 圆点 + 封面 + 标题 + 评分 / ID / 集数 */
+  /**
+   * 时间轴上的单个条目：时刻 + 圆点 + 卡片。
+   *
+   * 卡片内部是**两行流式布局**，而不是每个属性各占一行：
+   *
+   * ```
+   * ┌──────┬──────────────────────────────────────────┐
+   * │      │ 葬送的芙莉莲                    [已订阅]  │
+   * │ 封面 │ 第 3 话 · ID:529935 ·              8.52  │
+   * └──────┴──────────────────────────────────────────┘
+   * ```
+   *
+   * 文字区**顶部对齐**（不是垂直居中）：标题首行基线因此在所有卡片上一致，
+   * 与有没有评分、集数是否显示都无关。
+   */
   private drawTimelineEntry(
     ctx: SKRSContext2D,
     item: DigestItem,
@@ -437,8 +390,7 @@ export class Renderer {
     const L = IMAGE_LAYOUT
     const centreY = y + L.rowHeight / 2
     const cardLeft = spineX + L.timelineTimeGap + L.timelineCardGap
-    const cardWidth = canvasWidth - L.padding - cardLeft
-    const lines = this.cardLines(item, false)
+    const cardWidth = L.rowCardWidth
 
     drawCard(ctx, cardLeft, y, cardWidth, L.rowHeight, L.rowRadius, { shadow: true })
 
@@ -454,42 +406,118 @@ export class Renderer {
     ctx.fillStyle = THEME.accent
     ctx.fill()
 
-    this.drawCardBody(ctx, item, cover, cardLeft + L.rowPadding, centreY, cardWidth - L.rowPadding * 2, lines)
-    this.drawSubscribedBadge(ctx, item, cardLeft + cardWidth - 8, y + 8, cardWidth)
+    const inner = cardWidth - L.rowPadding * 2
+    const mediaHeight = L.mediaHeight
+    const mediaWidth = Math.round(mediaHeight * L.seasonCoverRatio)
+    const coverTop = y + (L.rowHeight - mediaHeight) / 2
+
+    if (this.config.output.showCover) {
+      if (cover) drawContainImage(ctx, cover, cardLeft + L.rowPadding, coverTop, mediaWidth, mediaHeight, { radius: L.mediaRadius })
+      else drawCoverPlaceholder(ctx, item.name, cardLeft + L.rowPadding, coverTop, mediaWidth, mediaHeight, L.mediaRadius)
+    }
+
+    const textX = this.config.output.showCover ? cardLeft + L.rowPadding + mediaWidth + L.mediaGap : cardLeft + L.rowPadding
+    const textRight = cardLeft + L.rowPadding + inner
+    this.drawRowCardText(ctx, item, textX, y + L.rowPadding, textRight - textX)
   }
 
   /**
-   * 条目卡片里的文字行。
+   * 行卡片的标题与元信息。时间轴与列表排版共用。
    *
-   * 顺序固定为：标题 → 时间/集数 → `ID:xxx` → 评分，配色与季表一致
-   * （主色加粗 / 强调色 / 弱化色 / 评分色），几个版面因此长得一样。
+   * 行数由是否双语决定，两种情况下标题区都是两行，元信息行位置因此固定：
    *
-   * @param showTime 是否显示日期时刻。
-   *   **单日时间轴（每日 / 深夜档）传 `false`**：左侧轨道已经把时刻写在卡片旁边了，
-   *   卡片里再写一遍是重复信息；那个位置改放集数，读者一眼就知道今晚是第几话。
-   *   列表排版没有轨道，日期与时刻都有用，因此保持原样。
+   * | 样式 | 版位 |
+   * | :--- | :--- |
+   * | 单语（`localized` / `original`） | 标题占两行、可折行；元信息在第 3 行 |
+   * | 双语（`both`） | 中文一行、原名一行，均不折行，超出补省略号；元信息在第 3 行 |
    */
-  private cardLines(item: DigestItem, showTime = true): CardLine[] {
-    const lines: CardLine[] = [
-      { text: item.name, color: THEME.title, size: FONT_SIZE.cardTitle, bold: true },
-      // 单日时间轴把时刻画在卡片左侧的轨道上，卡片里不再重复
-      ...(showTime ? [{ text: item.airLabel, color: THEME.accent, size: FONT_SIZE.cardMeta }] : []),
-      { text: this.episodeText(item), color: THEME.accent, size: FONT_SIZE.cardMeta },
-      { text: this.idText(item), color: THEME.muted, size: FONT_SIZE.cardMeta },
-      { text: this.scoreText(item), color: THEME.score, size: FONT_SIZE.cardMeta, bold: true },
-    ]
-    return lines.filter((line) => line.text)
+  private drawRowCardText(
+    ctx: SKRSContext2D,
+    item: DigestItem,
+    left: number,
+    top: number,
+    width: number,
+  ): void {
+    const L = IMAGE_LAYOUT
+    const titleRight = left + width
+    const badgeWidth = item.subscribed ? this.measure(ctx, this.messages.subscribedBadge, FONT_SIZE.badge, true) + 14 : 0
+    // 订阅标记占右上角，标题首行需避让
+    const firstLineWidth = width - badgeWidth - (badgeWidth ? 8 : 0)
+    const dual = Boolean(item.titleOriginal)
+
+    ctx.textAlign = 'left'
+    ctx.textBaseline = 'top'
+
+    // ── 标题 ──
+    const titleLines = this.wrapText(ctx, item.name, firstLineWidth, dual ? 1 : L.cardTitleLines)
+    ctx.font = font(FONT_SIZE.cardTitle, true)
+    ctx.fillStyle = THEME.title
+    titleLines.forEach((line, index) => {
+      ctx.fillText(line, left, top + index * L.cardTitleLineHeight)
+    })
+
+    if (item.subscribed) {
+      drawPill(ctx, this.messages.subscribedBadge, titleRight - badgeWidth, top + 1, {
+        font: font(FONT_SIZE.badge, true),
+        color: THEME.accent,
+        background: THEME.accentSoft,
+        height: 20,
+        paddingX: 7,
+      })
+    }
+
+    // 双语时原名独占第二行，不与中文标题共用横向空间
+    if (dual) {
+      ctx.font = font(FONT_SIZE.cardMeta)
+      ctx.fillStyle = THEME.muted
+      ctx.fillText(fitText(ctx, item.titleOriginal, width), left, top + L.cardTitleLineHeight + 3)
+    }
+
+    // 元信息行：集数 → ID → 评分，依次排开，不加底框
+    const titleBlockHeight = (dual ? 2 : L.cardTitleLines) * L.cardTitleLineHeight
+    const metaTop = top + titleBlockHeight + L.cardLineGap
+    const metaCentre = metaTop + 9
+    let cursor = left
+    ctx.textAlign = 'left'
+    ctx.textBaseline = 'middle'
+
+    const episode = this.episodeText(item)
+    if (episode) {
+      ctx.font = font(FONT_SIZE.cardMeta, true)
+      ctx.fillStyle = THEME.accent
+      ctx.fillText(episode, cursor, metaCentre)
+      cursor += ctx.measureText(episode).width + 8
+    }
+    const id = this.idText(item)
+    if (id) {
+      ctx.font = font(FONT_SIZE.cardMeta)
+      ctx.fillStyle = THEME.muted
+      const text = fitText(ctx, id, Math.max(0, titleRight - cursor))
+      ctx.fillText(text, cursor, metaCentre)
+      cursor += ctx.measureText(text).width + 8
+    }
+    const score = this.scoreText(item)
+    if (score) {
+      ctx.font = font(FONT_SIZE.cardMeta, true)
+      ctx.fillStyle = THEME.score
+      ctx.fillText(score, cursor, metaCentre)
+    }
+
+    ctx.textAlign = 'left'
+    ctx.textBaseline = 'top'
   }
 
+
+  /** 量一段文字的像素宽度（用于给右侧元素让位） */
+  private measure(ctx: SKRSContext2D, text: string, size: number, bold = false): number {
+    ctx.font = font(size, bold)
+    return ctx.measureText(text).width
+  }
+
+
   /**
-   * 集数文本，例如 `第 5 话`。
-   *
-   * 首播（第 1 话）**也照常显示**：新番开播是读者最关心的信息之一。
-   *
-   * 只有两类不显示：
-   * - **一次性放送**（`recurring === false`：剧场版、特别篇、整季一次放出）——它们没有
-   *   「第几话」的概念，`episodeCount` 恒为 1，写出来是噪声；
-   * - 集数未知（`episodeCount <= 0`）。
+   * 集数文本（`第 5 话`）。首播（第 1 话）也照常显示——新番开播是读者最关心的信息之一。
+   * 只有两类不显示：一次性放送（`recurring === false`，没有「第几话」的概念）与集数未知（`episodeCount <= 0`）。
    */
   private episodeText(item: DigestItem): string {
     if (!item.recurring) return ''
@@ -595,12 +623,8 @@ export class Renderer {
   }
 
   /**
-   * 周历表条目：底色块 + 小封面 + 三行文字。
-   *
-   * 每格只有约 200px 宽（并排七天），因此：
-   * - 文字行占满整行宽度，不做右侧预留；
-   * - 第一行是时刻 +「已订阅」气泡，第二、三行是标题（最多两行），末行是 `ID:xxx`；
-   * - **不显示评分**，给封面和标题留出空间。
+   * 周历表条目：底色块 + 小封面 + 三行文字。每格只有约 200px 宽（并排七天），因此
+   * 文字行占满整行宽度不做右侧预留，第一行是时刻 +「已订阅」气泡，末行是 `ID:xxx`，且不显示评分。
    */
   private drawWeekEntry(
     ctx: SKRSContext2D,
@@ -631,10 +655,7 @@ export class Renderer {
     ctx.textAlign = 'left'
     ctx.textBaseline = 'middle'
 
-    // 第一行：时刻 + 集数 + 气泡（气泡与它们同行，不占标题的宽度）
-    //
-    // 周历每格只有约 200px 宽，放不下「日期」——日期就是列头，因此这里只写时刻。
-    // 集数紧跟在时刻后面，读者一眼看到「几点、第几话」。
+    // 第一行：时刻 + 集数 + 气泡（气泡同行，不占标题宽度）。日期就是列头，这里不再重复
     let cursor = textX
     ctx.font = font(FONT_SIZE.weekTime, true)
     ctx.fillStyle = THEME.accent
@@ -666,8 +687,8 @@ export class Renderer {
       ctx.fillText(fitText(ctx, id, maxWidth), textX, titleY + 1)
     }
 
-    // 气泡最后画，贴在**右下角**：顶部只有一条「时刻 + 集数」的窄行，气泡挤在同一行会把
-    // 集数挤掉；右下角既不挡文字，也不与封面争空间。
+    // 气泡最后画，贴在**右下角**：顶部那条「时刻 + 集数」的窄行挤不下（会把集数挤掉），
+    // 右下角既不挡文字，也不与封面争空间
     this.drawSubscribedBadge(ctx, item, x + width - 8, y + L.weekRowHeight - 8, width, true)
   }
 
@@ -697,14 +718,15 @@ export class Renderer {
     }
 
     const height = L.headerHeight
-      + rows.reduce((sum, row) => sum + (row.header ? L.sectionHeaderHeight : 0) + L.cardHeight + L.cardGap, 0)
+      + rows.reduce((sum, row) => sum + (row.header ? L.sectionHeaderHeight : 0) + L.rowHeight + L.cardGap, 0)
       + L.footerHeight
       + L.rowGap
 
     const { canvas, ctx } = this.createSurface(width, height)
     this.drawHeader(ctx, payload, width)
 
-    const cardWidth = Math.floor((width - L.padding * 2 - L.cardColumnGap * (columns - 1)) / columns)
+    const available = Math.floor((width - L.padding * 2 - L.cardColumnGap * (columns - 1)) / columns)
+    const cardWidth = Math.min(L.rowCardWidth, available)
     let y = L.headerHeight + L.rowGap
     for (const row of rows) {
       if (row.header) {
@@ -715,7 +737,7 @@ export class Renderer {
         const x = L.padding + index * (cardWidth + L.cardColumnGap)
         this.drawListCard(ctx, entry.item, covers.get(entry.item.coverUrl) ?? null, x, y, cardWidth)
       })
-      y += L.cardHeight + L.cardGap
+      y += L.rowHeight + L.cardGap
     }
 
     this.drawFooter(ctx, payload, width, height)
@@ -741,7 +763,7 @@ export class Renderer {
     ctx.stroke()
   }
 
-  /** 列表卡片：与时间轴条目同一套排版 */
+  /** 列表卡片：与时间轴条目共用同一套两行排版 */
   private drawListCard(
     ctx: SKRSContext2D,
     item: DigestItem,
@@ -751,10 +773,21 @@ export class Renderer {
     width: number,
   ): void {
     const L = IMAGE_LAYOUT
-    const centreY = y + L.cardHeight / 2
-    drawCard(ctx, x, y, width, L.cardHeight, L.rowRadius, { shadow: true })
-    this.drawCardBody(ctx, item, cover, x + L.rowPadding, centreY, width - L.rowPadding * 2, this.cardLines(item))
-    this.drawSubscribedBadge(ctx, item, x + width - 8, y + 8, width)
+    drawCard(ctx, x, y, width, L.rowHeight, L.rowRadius, { shadow: true })
+
+    const inner = width - L.rowPadding * 2
+    const mediaHeight = L.mediaHeight
+    const mediaWidth = Math.round(mediaHeight * L.seasonCoverRatio)
+    const coverTop = y + (L.rowHeight - mediaHeight) / 2
+
+    if (this.config.output.showCover) {
+      if (cover) drawContainImage(ctx, cover, x + L.rowPadding, coverTop, mediaWidth, mediaHeight, { radius: L.mediaRadius })
+      else drawCoverPlaceholder(ctx, item.name, x + L.rowPadding, coverTop, mediaWidth, mediaHeight, L.mediaRadius)
+    }
+
+    const textX = this.config.output.showCover ? x + L.rowPadding + mediaWidth + L.mediaGap : x + L.rowPadding
+    const textRight = x + L.rowPadding + inner
+    this.drawRowCardText(ctx, item, textX, y + L.rowPadding, textRight - textX)
   }
 
   // #endregion
@@ -762,9 +795,7 @@ export class Renderer {
   // #region 本季封面网格
 
   /**
-   * 本季封面网格：每行 10 部，一季一百多部也就十来行。
-   *
-   * 卡片高度固定，标题固定占两行、评分与首播/下一场都放在固定位置，
+   * 本季封面网格：每行 10 部。卡片高度固定，标题固定占两行、评分与首播都放在固定位置，
    * 因此整片网格横向与纵向都对齐。
    */
   private async drawSeason(payload: RenderPayload): Promise<Canvas> {
@@ -901,13 +932,9 @@ export class Renderer {
   // #region 页眉与页脚
 
   /**
-   * 页眉：所有版面共用。
-   *
-   * 左侧强调条 + 标题（第一行）、副标题（第二行），右上角是统计行与时区，
-   * 底部一条分隔线。窄版面（单日时间轴与列表）的右上角放不下两行，就把统计行
-   * 挪到副标题后面，时区单独占第三行，位置依旧固定。
-   *
-   * **数据来源只在页脚出现一次**，页眉这里只写时区。
+   * 页眉：所有版面共用。左侧强调条 + 标题 + 副标题，右上角是统计行与时区，底部一条分隔线。
+   * 窄版面（单日时间轴与列表）右上角放不下两行，就把统计行挪到副标题后面、时区单独占第三行。
+   * **数据来源只在页脚出现一次**，这里只写时区。
    */
   private drawHeader(ctx: SKRSContext2D, payload: RenderPayload, width: number): void {
     const L = IMAGE_LAYOUT
@@ -967,9 +994,8 @@ export class Renderer {
   }
 
   /**
-   * 页眉右上角的一行小字：标明时刻所用的时区。
-   * bangumi-data 的周期时刻是 UTC，写明时区可以避免读者把时刻误读成日本时间。
-   * 数据来源由页脚统一给出，这里不再重复。
+   * 页眉右上角的一行小字：标明时刻所用的时区。bangumi-data 的周期时刻是 UTC，
+   * 写明时区可避免读者把时刻误读成日本时间；数据来源由页脚统一给出，这里不再重复。
    */
   private timeZoneNotice(): string {
     const hours = getTimeZoneOffsetMs(Date.now(), this.config.timeZone) / 3600000
@@ -978,12 +1004,8 @@ export class Renderer {
   }
 
   /**
-   * 周历表要按列分配封面额度。
-   *
-   * 设了 `coverLimit` 上限时，如果直接按顺序截断，前两天的额度就会用光、
-   * 后面几天的封面整片缺失。因此按列均分。
-   *
-   * 返回 `null` 表示**不限制**（加载本次绘制用到的全部封面）。
+   * 周历表要按列分配封面额度：设了 `coverLimit` 时若直接按顺序截断，前两天的额度就会用光、
+   * 后面几天的封面整片缺失，因此按列均分。返回 `null` 表示**不限制**。
    */
   private coverDrawOrder(groups: DigestGroup[]): DigestItem[] | null {
     if (!this.config.output.showCover) return []

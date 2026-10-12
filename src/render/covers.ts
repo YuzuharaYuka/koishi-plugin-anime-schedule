@@ -17,12 +17,7 @@ import { HttpClient } from '../services/network'
 /** 等待一张封面解码完成的最长时间 */
 const DECODE_WAIT_MS = 5000
 
-/**
- * 同一张封面的备用地址。
- *
- * Bangumi 图床按尺寸分目录（`/pic/cover/l|c|m|s/`），个别条目会缺其中某一个尺寸，
- * 因此逐个回退比只试一个地址稳得多。
- */
+/** 同一张封面的备用地址：Bangumi 图床按尺寸分目录（`/pic/cover/l|c|m|s/`），个别条目会缺某个尺寸，需逐个回退 */
 function coverUrlCandidates(url: string): string[] {
   const matched = /^(https?:\/\/[^/]+\/pic\/cover\/)([a-z]+)(\/.*)$/i.exec(url)
   if (!matched) return [url]
@@ -44,9 +39,7 @@ function toBuffer(raw: unknown): Buffer | null {
 
 /**
  * 把图片字节解码成可绘制的画布。
- *
- * 给 `Image.src` 赋 Buffer 后 `width/height/complete` 会立刻可用，但位图解码是异步的，
- * 此时直接 `drawImage` 只会得到全透明的空画布，必须等解码完成。
+ * 赋 `Image.src` 后 `width/height` 立刻可用，但位图解码是异步的，直接 `drawImage` 只会得到全透明的空画布。
  */
 async function decodeToCanvas(buffer: Buffer): Promise<Canvas | null> {
   if (!buffer.length) return null
@@ -84,12 +77,7 @@ function waitForLoad(image: Image): Promise<boolean> {
   })
 }
 
-/**
- * 封面加载器。
- *
- * 三级缓存（内存 → 磁盘 → 网络）加并发下载：一次推送里同一张封面只下载一次，
- * 之后复用内存与磁盘副本，定时推送的耗时基本只剩绘制。
- */
+/** 封面加载器：内存 → 磁盘 → 网络三级缓存 + 并发下载，同一张封面一次推送只下载一次 */
 export class CoverStore {
   private readonly memory = new Map<string, Canvas | null>()
   private readonly inflight = new Map<string, Promise<Canvas | null>>()
@@ -114,8 +102,7 @@ export class CoverStore {
 
   /**
    * 批量加载，返回「URL → 画布」，取不到的为 null。
-   *
-   * `limit` 为 0 表示**不限制**，与「不加载」含义相反，因此早退判断只看 `items` 是否为空。
+   * `limit` 为 0 表示不限制（与「不加载」含义相反），故早退判断只看 `items` 是否为空。
    */
   async load(items: CoverRequest[], limit: number): Promise<Map<string, Canvas | null>> {
     const result = new Map<string, Canvas | null>()
@@ -146,7 +133,7 @@ export class CoverStore {
     for (const entry of entries) result.set(entry.url, entry.canvas)
     const ok = entries.filter((entry) => entry.canvas).length
     this.logger.debug('[render] 封面就绪 %d/%d 张 (%dms)', ok, urls.length, Date.now() - started)
-    // 封面缺失会直接影响版面观感，失败比例高时给一条 info 级别的提示，便于定位
+    // 封面缺失会影响版面，失败比例高时给出 info 提示便于定位
     if (ok < urls.length) {
       this.logger.info(
         '[render] 封面 %d/%d 张可用（内存或磁盘命中 %d，新下载 %d，失败 %d）',
@@ -189,8 +176,7 @@ export class CoverStore {
       await fs.rm(this.filePath(url), { force: true }).catch(() => undefined)
     }
 
-    // 逐个候选地址尝试：Bangumi 的图床偶尔会缺某个尺寸的图，
-    // 只试一个地址的话整张封面就变成占位块了
+    // 逐个候选地址尝试：图床偶尔缺某个尺寸的图，只试一个地址整张封面就变成占位块了
     for (const candidate of coverUrlCandidates(url)) {
       const buffer = await this.download(candidate)
       if (!buffer) continue

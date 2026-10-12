@@ -1,5 +1,14 @@
 import { Schema } from 'koishi'
-import { COVER_CONCURRENCY, DEFAULT_FONT_FAMILY, DEFAULT_JPEG_QUALITY, DEFAULT_SCORE_TTL_HOURS } from './constants'
+import {
+  COVER_CONCURRENCY,
+  DEFAULT_FONT_FAMILY,
+  DEFAULT_JPEG_QUALITY,
+  DEFAULT_SCORE_TTL_HOURS,
+  DAILY_OFFSET_MAX,
+  DAILY_OFFSET_MIN,
+  DEFAULT_SUPERSAMPLE,
+  MAX_SUPERSAMPLE,
+} from './constants'
 import type { DigestFormat, ImageLayout, PluginLocale, TimeZone, TitleStyle } from './types'
 import { resolveTimeZone } from './utils/time'
 
@@ -34,6 +43,8 @@ export interface Config {
     format: DigestFormat
     layout: ImageLayout
     coverLimit: number
+    /** `anime.info` 按关键词查询时最多出几部，`0` 表示不限制 */
+    infoKeywordLimit: number
     showCover: boolean
     showScore: boolean
     useForward: boolean
@@ -54,8 +65,10 @@ export interface Config {
     fontFamily: string
     coverConcurrency: number
     coverCacheDays: number
-    /** JPEG 编码质量（0-100）。图片以文字与线条为主，压缩伪影很明显，因此默认取高值 */
+    /** JPEG 编码质量（1-100） */
     jpegQuality: number
+    /** 超采样倍数：画布按「逻辑尺寸 × 该值」建立后再等比缩放，小字笔画更锐利，体积与耗时随之上升 */
+    supersample: number
   }
 
   subscription: {
@@ -91,7 +104,7 @@ export const Config: Schema<Config> = Schema.intersect([
       Schema.const('Asia/Taipei').description('Asia/Taipei (UTC+8)'),
       Schema.const('UTC').description('UTC'),
     ])
-      .description('时刻与日期按此时区换算')
+      .description('时刻与日期换算时区')
       .default('Asia/Shanghai'),
     locale: Schema.union([
       Schema.const('zh-CN').description('简体中文'),
@@ -107,10 +120,10 @@ export const Config: Schema<Config> = Schema.intersect([
       dailyEnabled: Schema.boolean().description('每日更新表').default(true),
       dailyTime: Schema.string().pattern(TIME_PATTERN).description('推送时刻').default('08:00'),
       dailyOffsetDays: Schema.number()
-        .min(-1).max(1).step(1)
-        .description('日期偏移：0 当天，-1 前一天，1 后一天')
+        .min(DAILY_OFFSET_MIN).max(DAILY_OFFSET_MAX).step(1)
+        .description('日期偏移，0 当天、-1 前一天、1 后一天')
         .default(0),
-      nightEnabled: Schema.boolean().description('深夜档（当晚 21:00 至次日 06:00）').default(true),
+      nightEnabled: Schema.boolean().description('深夜档，当晚 21:00 至次日 06:00').default(true),
       nightTime: Schema.string().pattern(TIME_PATTERN).description('推送时刻').default('21:00'),
       weeklyEnabled: Schema.boolean().description('本周更新表').default(true),
       weeklyWeekday: Schema.union(WEEKDAYS.map((item) => Schema.const(item.value).description(item.label)))
@@ -135,11 +148,11 @@ export const Config: Schema<Config> = Schema.intersect([
     content: Schema.object({
       maxItems: Schema.number()
         .min(0).step(10)
-        .description('单次推送最多显示多少部，0 为不限制')
+        .description('单次推送最多显示多少部，0 不限制')
         .default(0),
       longRunningThreshold: Schema.number()
         .min(0).step(1)
-        .description('剔除长期连载番的话数阈值，0 为不过滤')
+        .description('剔除长期连载番的话数阈值，0 不过滤')
         .default(0),
     }),
   }).description('推送内容'),
@@ -150,7 +163,7 @@ export const Config: Schema<Config> = Schema.intersect([
         Schema.const('image').description('风格化图片'),
         Schema.const('text').description('纯文本'),
       ])
-        .description('推送形态；图片渲染失败时自动改用文本')
+        .description('推送形态，图片渲染失败时自动改用文本')
         .default('image'),
       layout: Schema.union([
         Schema.const('table').description('时间表'),
@@ -160,12 +173,16 @@ export const Config: Schema<Config> = Schema.intersect([
         .default('table'),
       coverLimit: Schema.number()
         .min(0)
-        .description('单张图片最多加载多少张封面，0 为不限制')
+        .description('单张图片最多加载多少张封面，0 不限制')
         .default(0),
+      infoKeywordLimit: Schema.number()
+        .min(0)
+        .description('anime.info 按关键词查询番剧时显示数量上限，0 不限制')
+        .default(20),
       showCover: Schema.boolean().description('显示封面').default(true),
-      showScore: Schema.boolean().description('显示评分，评价不足 10 人时不显示').default(true),
+      showScore: Schema.boolean().description('显示评分，评价不足 10 条时隐藏').default(true),
       useForward: Schema.boolean()
-        .description('纯文本模式使用合并转发，避免刷屏')
+        .description('纯文本模式用合并转发，避免刷屏')
         .default(true),
     }),
   }).description('输出设置'),
@@ -192,7 +209,7 @@ export const Config: Schema<Config> = Schema.intersect([
         .default(30),
       airingTtlHours: Schema.number()
         .min(1).step(1)
-        .description('播出状态（是否已播完）的缓存小时数')
+        .description('是否已播完的缓存小时数')
         .default(6),
     }),
   }).description('本地化'),
@@ -200,7 +217,7 @@ export const Config: Schema<Config> = Schema.intersect([
   Schema.object({
     render: Schema.object({
       fontFamily: Schema.string()
-        .description('绘制图片时使用的字体族；留空则自动寻找系统中文字体')
+        .description('字体族，留空则自动寻找系统中文字体')
         .default(DEFAULT_FONT_FAMILY),
       coverConcurrency: Schema.number()
         .min(1)
@@ -208,12 +225,16 @@ export const Config: Schema<Config> = Schema.intersect([
         .default(COVER_CONCURRENCY),
       coverCacheDays: Schema.number()
         .min(0)
-        .description('封面缓存天数，0 为不写磁盘')
+        .description('封面缓存天数，0 不写磁盘')
         .default(21),
       jpegQuality: Schema.number()
         .min(1).max(100).step(1)
-        .description('图片编码质量')
+        .description('编码质量')
         .default(DEFAULT_JPEG_QUALITY),
+      supersample: Schema.number()
+        .min(1).max(MAX_SUPERSAMPLE).step(1)
+        .description('超采样倍数')
+        .default(DEFAULT_SUPERSAMPLE),
     }),
   }).description('图片'),
 
@@ -221,7 +242,7 @@ export const Config: Schema<Config> = Schema.intersect([
     subscription: Schema.object({
       maxPerChannel: Schema.number()
         .min(0).step(1)
-        .description('单个群最多订阅多少部，0 为不限制')
+        .description('单个群最多订阅多少部，0 不限制')
         .default(0),
     }),
   }).description('订阅'),
@@ -243,20 +264,23 @@ export const Config: Schema<Config> = Schema.intersect([
   }).description('其他'),
 ])
 
-/**
- * 把配置夹到安全区间。
- * 只保证「类型正确」与「不小于最小值」，不设人为上限。
- */
+/** 把配置夹到安全区间：只保证类型正确且不小于最小值，不设人为上限 */
 export function normalizeConfig(config: Config): Config {
+  /** 取整并夹到不小于 `min`（默认 0）。允许负值的字段不能走这个默认值 */
   const int = (value: number | undefined, fallback: number, min = 0): number => {
     if (typeof value !== 'number' || !Number.isFinite(value)) return fallback
     return Math.max(min, Math.round(value))
+  }
+  /** 取整并夹到 `[min, max]`；用于允许负值的字段，如 `dailyOffsetDays` */
+  const intBetween = (value: number | undefined, fallback: number, min: number, max: number): number => {
+    if (typeof value !== 'number' || !Number.isFinite(value)) return fallback
+    return Math.min(max, Math.max(min, Math.round(value)))
   }
   const time = (value: string | undefined, fallback: string): string => (
     typeof value === 'string' && TIME_PATTERN.test(value) ? value : fallback
   )
 
-  // 旧版本存在 `both` 形态，已移除，统一按图片处理
+  // 旧版本的 `both` 形态已移除：非 `text` 一律按图片处理
   const format: DigestFormat = config.output?.format === 'text' ? 'text' : 'image'
 
   return {
@@ -265,7 +289,7 @@ export function normalizeConfig(config: Config): Config {
     push: {
       ...config.push,
       dailyTime: time(config.push?.dailyTime, '08:00'),
-      dailyOffsetDays: Math.max(-1, Math.min(1, int(config.push?.dailyOffsetDays, 0))),
+      dailyOffsetDays: intBetween(config.push?.dailyOffsetDays, 0, DAILY_OFFSET_MIN, DAILY_OFFSET_MAX),
       weeklyWeekday: Math.max(0, Math.min(6, int(config.push?.weeklyWeekday, 1))) as Config['push']['weeklyWeekday'],
       nightTime: time(config.push?.nightTime, '21:00'),
       weeklyTime: time(config.push?.weeklyTime, '08:00'),
@@ -282,6 +306,7 @@ export function normalizeConfig(config: Config): Config {
       format,
       layout: config.output?.layout === 'list' ? 'list' : 'table',
       coverLimit: int(config.output?.coverLimit, 0),
+      infoKeywordLimit: int(config.output?.infoKeywordLimit, 20),
     },
     localize: {
       ...config.localize,
@@ -295,6 +320,7 @@ export function normalizeConfig(config: Config): Config {
       coverConcurrency: int(config.render?.coverConcurrency, COVER_CONCURRENCY, 1),
       coverCacheDays: int(config.render?.coverCacheDays, 21),
       jpegQuality: Math.min(100, int(config.render?.jpegQuality, DEFAULT_JPEG_QUALITY, 1)),
+      supersample: Math.min(MAX_SUPERSAMPLE, int(config.render?.supersample, DEFAULT_SUPERSAMPLE, 1)),
     },
     subscription: {
       ...config.subscription,

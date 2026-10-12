@@ -43,17 +43,18 @@ export { ConfigSchema as Config }
 
 export const usage = `
 番剧更新表与订阅提醒。作品清单来自 [bangumi-data](https://github.com/bangumi-data/bangumi-data)，
-排期、封面查询 [AniList](https://anilist.co/)，中文标题、封面与评分取自 [Bangumi](https://bgm.tv/)。
+中文标题、封面与评分取自 [Bangumi](https://bgm.tv/)，排期与播出状态查询 [AniList](https://anilist.co/)
 
-在群聊里执行一次 \`anime.on\` 后开始接收定时推送。
+在群聊里执行一次 \`anime.on\` 后开始接收定时推送
 
 | 指令 | 别名 | 说明 |
 | :--- | :--- | :--- |
 | \`anime.today\` | 今日新番 | 今日更新表，\`-o -1\` 看前一天 |
 | \`anime.night\` | 深夜新番 | 今晚 21:00 至次日 06:00 |
 | \`anime.week\` | 本周新番 | 今天起七天 |
-| \`anime.season [季度]\` | 本季新番 | 本季一览，也可查往季 |
+| \`anime.season [季度]\` | 本季新番 | 本季一览，\`-o -1\` 看上一季 |
 | \`anime.search <关键词>\` | 番剧搜索 | 中日英文标题都能搜 |
+| \`anime.info <ID 或序号>\` | 番剧详情 | 简介、连载状态、话数、评分与逐集进度 |
 | \`anime.sub <ID>\` | 番剧订阅 | 用 Bangumi 条目 ID 订阅 |
 | \`anime.remove <ID>\` | 取消订阅 | 也接受订阅列表里的序号 |
 | \`anime.list\` | 订阅列表 | 本群订阅的番剧 |
@@ -63,10 +64,13 @@ export const usage = `
 | \`anime.status\` | 推送状态 | 本群推送状态 |
 | \`anime.push <类型>\` | 立即推送 | 手动发一次推送 |
 
-每日、深夜档与本周只列还在播的作品，本季表收录该季首播的全部 TV / WEB 动画。
-卡片上的 \`ID:xxx\` 可直接用于订阅。
+每日、深夜档与本周只列还在播的作品；本季表收录该季首播的全部 TV / WEB 动画
 
-若无法获取封面图和评分，请尝试配置 proxy-agent 代理设置。
+卡片上的 \`ID:xxx\` 可直接用于订阅
+
+\`anime.info\` 给条目 ID 或搜索结果序号时出单部详情，给关键词时搜到几部出几部信息，如 \`anime.info 400602\`、\`anime.info 3\`、\`anime.info 芙莉莲\`
+
+取不到封面或评分时，请尝试安装启用 **[proxy-agent](/market/?keyword=proxy-agent)** 并配置代理
 `
 
 const logger = new Logger(PLUGIN_NAME)
@@ -108,14 +112,14 @@ export function apply(ctx: Context, rawConfig: Config) {
     dispatchedAt: 'unsigned',
   }, { autoInc: true })
 
-  // 调试日志开关：打开后会把 API 请求、索引命中、条目匹配等细节打进日志
+  // 调试日志开关：打开后输出 API 请求、索引命中与条目匹配细节
   setupDebug(config.advanced.debug, logger)
   if (config.advanced.debug) {
     logger.info('[debug] 调试日志已开启，将输出请求 URL、索引命中与条目匹配细节')
   }
 
   // 出网客户端：Bangumi 接口与图床在国内无法直连，代理在这里统一生效
-  const http = new HttpClient(ctx, logger)
+  const http = new HttpClient(ctx, logger, config.advanced.retries)
   // bangumi-data 索引层：作品清单、中文译名、Bangumi 条目 ID 与周期时刻都来自这里
   const index = new BangumiDataIndex(ctx, logger)
   // AniList 播出状态：判断「这部番是否还在播」的权威依据
@@ -126,8 +130,7 @@ export function apply(ctx: Context, rawConfig: Config) {
   // 单部作品详情：只服务 `anime.info` 的交互查询，不参与推送
   const infos = new InfoService(ctx, logger, http, digest.localizer, config.timeZone, getMessages(config.locale))
 
-  // 立刻开始载入：读的是本地依赖包，通常几十毫秒；
-  // 与插件启动并行，指令和推送在构建前会 await 它，不会出现「索引还没好」的空窗。
+  // 立刻开始载入并与插件启动并行：指令与推送在构建前会 await 它，不会出现「索引还没好」的空窗
   const indexReady = index.ensure()
   const localizeReady = digest.localizer.load()
   const airingReady = airing.ensure()
@@ -205,7 +208,7 @@ function registerCommands(ctx: Context, deps: HandlerContext) {
     .example('anime.today   # 今日新番')
     .example('anime.week    # 本周新番')
     .example('anime.search 転生   # 搜索作品')
-    .example('anime.sub 253104   # 按 Bangumi 条目 ID 订阅')
+    .example('anime.sub 400602   # 按 Bangumi 条目 ID 订阅')
     .example('anime.sub add 1   # 订阅搜索结果第 1 条')
 
   cmd.action(async ({ session }) => {
@@ -270,11 +273,12 @@ function registerCommands(ctx: Context, deps: HandlerContext) {
 
   cmd.subcommand('.info <target:string>', '查看番剧详情')
     .alias('番剧详情', '番剧信息', '详情')
-    .usage('参数是 Bangumi 条目 ID，或 `anime.search` 结果中的序号，也可以直接给标题关键词。'
-      + '以图片推送，渲染失败或设置为文本模式时改成文字。')
-    .example('anime.info 400602      # 葬送的芙莉莲')
-    .example('anime.info 3           # 搜索结果里的第 3 条')
-    .example('anime.info 芙莉莲       # 直接按标题查')
+    .usage('参数为 Bangumi 条目 ID 或 `anime.search` 结果序号时出单部详情；'
+      + '为标题关键词时命中几部出几张，走合并转发；上限见 `output.infoKeywordLimit`。'
+      + '默认以图片推送，渲染失败或文本模式下改为文字。')
+    .example('anime.info 400602      # 按条目 ID 查，出单部详情')
+    .example('anime.info 3           # 搜索结果第 3 条')
+    .example('anime.info 芙莉莲       # 按关键词查，命中几部出几张')
     .action(async ({ session }, target) => {
       if (!session) return
       return commandInfo(deps, session, target ?? '')
@@ -282,8 +286,8 @@ function registerCommands(ctx: Context, deps: HandlerContext) {
 
   cmd.subcommand('.sub <target:string>', '订阅一部番剧')
     .alias('番剧订阅', '订阅番剧', '订阅添加', '添加订阅')
-    .usage('参数是 Bangumi 条目 ID（季表卡片上的 `ID:253104`），也可以是 `anime.search` 结果中的序号。')
-    .example('anime.sub 253104   # 按 Bangumi 条目 ID 订阅')
+    .usage('参数是 Bangumi 条目 ID（季表卡片上的 `ID:400602`），也可以是 `anime.search` 结果中的序号。')
+    .example('anime.sub 400602   # 按 Bangumi 条目 ID 订阅')
     .example('anime.sub 1        # 订阅搜索结果中的第 1 项')
     .action(async ({ session }, target) => {
       if (!session) return
@@ -293,7 +297,7 @@ function registerCommands(ctx: Context, deps: HandlerContext) {
   cmd.subcommand('.remove <target:string>', '取消订阅')
     .alias('取消订阅', '订阅取消', '退订')
     .usage('参数是 Bangumi 条目 ID，也可以是 `anime.list` 中的序号。')
-    .example('anime.remove 253104')
+    .example('anime.remove 400602')
     .example('anime.remove 1')
     .action(async ({ session }, target) => {
       if (!session) return
