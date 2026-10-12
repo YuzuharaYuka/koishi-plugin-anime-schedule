@@ -124,6 +124,19 @@ export function formatClock(ms: number, timeZone: string): string {
   return `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`
 }
 
+/**
+ * 详情页用的时刻文案，形如 `2026/10/16周五 22:00`。
+ *
+ * 与推送表的 `9/27周日 23:00` 不同，这里**带年份**：详情页是查一部作品本身，
+ * 读者常常在看往季甚至几年前的番，只有月日会让人分不清是哪一年。
+ */
+export function formatMoment(ms: number, timeZone: string, weekdayNames: string[]): string {
+  const { year, month, day } = readParts(ms, timeZone)
+  const clock = formatClock(ms, timeZone)
+  const weekday = weekdayNames[getLocalWeekday(ms, timeZone)] ?? ''
+  return `${year}/${month}/${day}${weekday} ${clock}`
+}
+
 /** 本地星期，0 表示周日 */
 export function getLocalWeekday(ms: number, timeZone: string): number {
   return readParts(ms, timeZone).weekday

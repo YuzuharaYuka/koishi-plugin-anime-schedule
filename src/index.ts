@@ -11,6 +11,7 @@ import { Scheduler } from './services/scheduler'
 import { Renderer } from './render/image'
 import {
   commandNext,
+  commandInfo,
   commandNight,
   commandOff,
   commandOn,
@@ -26,6 +27,7 @@ import {
   commandWeekly,
   type HandlerContext,
 } from './handlers'
+import { InfoService } from './services/info'
 import { clamp, errorMessage, setupDebug } from './utils'
 import { getTimeZoneOffsetMs, resolveTimeZone } from './utils/time'
 
@@ -121,6 +123,8 @@ export function apply(ctx: Context, rawConfig: Config) {
   const digest = new DigestService(ctx, config, logger, index, airing)
   const renderer = new Renderer(ctx, config, logger, http)
   const guard = new DispatchGuard(ctx, logger)
+  // 单部作品详情：只服务 `anime.info` 的交互查询，不参与推送
+  const infos = new InfoService(ctx, logger, http, digest.localizer, config.timeZone, getMessages(config.locale))
 
   // 立刻开始载入：读的是本地依赖包，通常几十毫秒；
   // 与插件启动并行，指令和推送在构建前会 await 它，不会出现「索引还没好」的空窗。
@@ -136,6 +140,7 @@ export function apply(ctx: Context, rawConfig: Config) {
     logger,
     (payload: Digest) => renderer.render({
       kind: payload.kind,
+      now: payload.generatedAt,
       header: payload.header,
       summary: payload.summary,
       groups: payload.groups,
@@ -153,7 +158,7 @@ export function apply(ctx: Context, rawConfig: Config) {
     })
   })
 
-  const deps: HandlerContext = { ctx, config, logger, digest, renderer }
+  const deps: HandlerContext = { ctx, config, logger, digest, renderer, info: infos }
 
   registerCommands(ctx, deps)
 
@@ -261,6 +266,18 @@ function registerCommands(ctx: Context, deps: HandlerContext) {
     .action(async ({ session, options }, keyword) => {
       if (!session) return
       return commandSearch(deps, session, keyword ?? '', { limit: options?.limit })
+    })
+
+  cmd.subcommand('.info <target:string>', '查看番剧详情')
+    .alias('番剧详情', '番剧信息', '详情')
+    .usage('参数是 Bangumi 条目 ID，或 `anime.search` 结果中的序号，也可以直接给标题关键词。'
+      + '以图片推送，渲染失败或设置为文本模式时改成文字。')
+    .example('anime.info 400602      # 葬送的芙莉莲')
+    .example('anime.info 3           # 搜索结果里的第 3 条')
+    .example('anime.info 芙莉莲       # 直接按标题查')
+    .action(async ({ session }, target) => {
+      if (!session) return
+      return commandInfo(deps, session, target ?? '')
     })
 
   cmd.subcommand('.sub <target:string>', '订阅一部番剧')

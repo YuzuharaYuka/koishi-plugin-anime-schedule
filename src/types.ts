@@ -174,6 +174,16 @@ export interface DigestGroup {
 }
 
 /** 一条待渲染的播出记录 */
+/**
+ * 需要封面的最小形状。
+ *
+ * `CoverStore.load` 只读 `coverUrl`，因此推送表的 `DigestItem` 与详情页的
+ * `SubjectInfo` 都能直接传进来，不必为了共用而构造一个假的条目。
+ */
+export interface CoverRequest {
+  coverUrl: string
+}
+
 export interface DigestItem {
   /** 形如 `bgm:253104` */
   tid: string
@@ -211,7 +221,17 @@ export interface DigestItem {
   airLabel: string
   /** 作品形态：tv / web / ova / movie 等 */
   type: string
-  /** 播出时刻（UTC 毫秒），用于排序与去重 */
+  /**
+   * 索引里的最终话时刻（epoch 毫秒），`null` 表示长期番或尚未确定。
+   *
+   * 搜索列表用它标出「已完结」，省得读者逐个点进详情确认。
+   */
+  endMs: number | null
+  /**
+   * 本场播出的绝对时刻（epoch 毫秒），用于排序与去重。
+   *
+   * 单日时间轴另用它定位「现在」这条分界线；`time` 只是展示文案，比较时刻不要用它。
+   */
   atMs: number
 }
 
@@ -219,6 +239,14 @@ export interface DigestItem {
 export interface RenderPayload {
   /** 决定使用哪一种排版 */
   kind: DigestKind
+  /**
+   * 这份数据的生成时刻（epoch 毫秒）。
+   *
+   * 单日时间轴用它画一条「现在」的分界线，读者一眼能看出哪些已经播了、哪些还没播。
+   * 用生成时刻而不是渲染时刻，是为了让"现在"与列表内容自洽——同一份数据反复出图时
+   * 分界线不会漂移。
+   */
+  now: number
   header: string
   summary: string
   groups: DigestGroup[]

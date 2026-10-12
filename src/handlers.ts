@@ -3,8 +3,10 @@ import { DIGEST_LABELS, RESPONSES, getMessages } from './constants'
 import type { Config } from './config'
 import type { Digest, DigestItem, DigestKind } from './types'
 import type { DigestService } from './services/digest'
+import type { InfoService } from './services/info'
 import { sendTextDigest } from './services/dispatch'
 import type { Renderer } from './render/image'
+import { renderInfoText, renderSearchText } from './render/text'
 import { formatDate, getDayStartMs, getLocalWeekday, getSeasonStartMonth, today } from './utils/time'
 import { clamp, formatNetworkError, truncate } from './utils'
 
@@ -30,6 +32,8 @@ export interface HandlerContext {
   logger: Logger
   digest: DigestService
   renderer: Renderer
+  /** 单部作品详情（`anime.info`），与推送路径无关，只服务交互查询 */
+  info: InfoService
 }
 
 /** 订阅表里的 tid 形如 `bgm:<Bangumi 条目 ID>` */
@@ -74,6 +78,22 @@ function channelOf(session: Session): string {
   return session.channelId ?? ''
 }
 
+/**
+ * 把索引层给内部的来源说法翻成用户能读的短句。
+ *
+ * `BangumiDataIndex.source` 返回的是 `本地依赖包` / `磁盘缓存` / `CDN 镜像` 这类
+ * **面向日志**的词，直接摆到 `anime.status` 里用户看不懂，也判断不出该不该在意
+ * ——正常情况是"随插件内置"，出现另外两种才值得看一眼。
+ */
+function describeIndexSource(source: string): string {
+  switch (source) {
+    case '本地依赖包': return '随插件内置 (bangumi-data)'
+    case '磁盘缓存': return '本地磁盘缓存 (bangumi-data)'
+    case 'CDN 镜像': return '已从远程更新 (bangumi-data)'
+    default: return source || '未知'
+  }
+}
+
 function platformOf(session: Session): string {
   return session.platform ?? ''
 }
@@ -93,6 +113,7 @@ async function replyDigest(deps: HandlerContext, session: Session, digest: Diges
     try {
       const buffer = await renderer.render({
         kind: digest.kind,
+        now: digest.generatedAt,
         header: digest.header,
         summary: digest.summary,
         groups: digest.groups,
@@ -269,22 +290,66 @@ export async function commandSearch(
     if (!items.length) return RESPONSES.emptySearch(query)
     writeSearchCache(session, items)
 
-    const lines = items.map((item, index) => {
-      const when = item.firstYear
-        ? `${item.firstYear}-${String(item.firstMonth ?? 1).padStart(2, '0')}`
-        : '档期未知'
-      const meta = [when, item.type ? item.type.toUpperCase() : ''].filter(Boolean).join(' · ')
-      // 显示纯数字 ID，与 `anime.sub <ID>` 的写法一致，便于直接复制
-      return `${index + 1}. [ID:${item.bgmId ?? '-'}] ${truncate(item.name, 60)}\n    ${meta}`
-    })
-    return [
-      `找到 ${items.length} 部与 "${query}" 相关的作品，使用 \`anime.sub <ID>\` 或结果序号订阅:`,
-      ...lines,
-    ].join('\n')
+    // 只给文本列表（带评分与档期），不逐条渲染详情卡：
+    // 一次搜索常有十来个结果，十张卡片刷屏反而看不出哪个是哪个。
+    // 想看详情时用 `anime.info <序号>` 或直接点 ID。
+    return renderSearchText(items, query, deps.config)
   } catch (error) {
     deps.logger.warn('[command] 搜索失败:', error)
     return `搜索失败。${formatNetworkError(error)}`
   }
+}
+
+/**
+ * 单部作品详情。
+ *
+ * 目标可以是 Bangumi 条目 ID，也可以是上一次搜索结果里的序号（与 `anime.sub` 同一套解析），
+ * 因此「搜索 → 看详情 → 订阅」是一条连贯的路径。
+ */
+export async function commandInfo(
+  deps: HandlerContext,
+  session: Session,
+  target: string,
+): Promise<string | h | void> {
+  const raw = (target ?? '').trim()
+  if (!raw) return '用法: anime.info <Bangumi 条目 ID 或搜索结果序号>'
+
+  let bgmId: number | null = null
+  if (BGM_ID.test(raw)) {
+    bgmId = Number(raw)
+  } else {
+    // 不是纯数字就当作搜索关键词，省掉「先 search 再 info」这一步
+    const items = await deps.digest.search(raw, 1)
+    bgmId = items[0]?.bgmId ?? null
+    if (bgmId === null) return RESPONSES.notFound
+  }
+
+  await session.send(h('quote', { id: session.messageId }) + `正在查询 ID:${bgmId}...`)
+
+  try {
+    const subscribed = await isSubscribed(deps, session, `bgm:${bgmId}`)
+    const detail = await deps.info.fetch(bgmId, subscribed)
+    if (!detail) return RESPONSES.notFound
+
+    if (deps.config.output.format !== 'image') return renderInfoText(detail, deps.config)
+    try {
+      const buffer = await deps.renderer.renderInfo(detail)
+      return h.image(buffer, 'image/jpeg')
+    } catch (error) {
+      // 与推送表同样兜底：出图失败就退回文本，不让用户拿到一个错误
+      deps.logger.warn('[command] 详情出图失败，改用文本:', error)
+      return renderInfoText(detail, deps.config)
+    }
+  } catch (error) {
+    deps.logger.warn('[command] 查询作品详情失败:', error)
+    return `查询失败。${formatNetworkError(error)}`
+  }
+}
+
+/** 该作品是否已被本群订阅 */
+async function isSubscribed(deps: HandlerContext, session: Session, tid: string): Promise<boolean> {
+  const rows = await deps.digest.listSubscriptions(platformOf(session), channelOf(session))
+  return rows.some((row) => row.tid === tid)
 }
 
 // #endregion
@@ -537,7 +602,9 @@ export async function commandStatus(deps: HandlerContext, session: Session): Pro
       `时区: ${config.timeZone} (当前 ${formatDate(Date.now(), config.timeZone)})`,
       `推送形态: ${formatText}`,
       `本地化: ${digest.localizer.enabled ? `已开启 (${config.localize.titleStyle})` : '已关闭'}`,
-      `数据来源: bangumi-data (${digest.index.size} 部) / Bangumi`,
+      // 用索引层的真实来源，不写死：`bangumi-data` 取不到时会退化为远程拉取，
+      // 而状态页正是用来诊断这种情况的，文案必须跟着变
+      `数据来源: ${describeIndexSource(digest.index.source)} (${digest.index.size} 部) / Bangumi`,
       `推送时刻: ${describeTimes(config)}`,
       `开关状态: 每日 ${channel?.dailyEnabled ? '开' : '关'} / 深夜档 ${channel?.nightEnabled ? '开' : '关'} / 本周 ${channel?.weeklyEnabled ? '开' : '关'} / 本季 ${channel?.seasonEnabled ? '开' : '关'}`,
       `订阅番剧: ${subscriptions.length} 部${config.subscription.maxPerChannel > 0 ? ` (上限 ${config.subscription.maxPerChannel})` : ''}`,

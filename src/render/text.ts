@@ -38,13 +38,79 @@
  * 「首播在 9/27 的条目落在 `【10/2周五】` 组里」（因为它下次播出在那天）这种对不上的情况。
  */
 import { h } from 'koishi'
-import { DIGEST_LABELS, getMessages } from '../constants'
+import { DIGEST_LABELS, RESPONSES, getMessages } from '../constants'
 import type { Config } from '../config'
 import type { Digest, DigestGroup, DigestItem } from '../types'
+import type { SubjectInfo } from '../services/info'
 import { truncate } from '../utils'
 
 /** 标题最多显示多少个字，超出补省略号（与命令里 `anime.next` 的宽度保持一致） */
 const TITLE_MAX = 60
+
+/**
+ * 作品详情卡的纯文本形态。
+ *
+ * 与图片版信息一致，只是排布改用缩进与分隔线：图片能靠颜色分区，文本只能靠符号。
+ */
+export function renderInfoText(info: SubjectInfo, config: Config): string {
+  const messages = getMessages(config.locale)
+  const status = info.status === 'airing' ? messages.infoAiring
+    : info.status === 'finished' ? messages.infoFinished
+    : info.status === 'upcoming' ? messages.infoUpcoming
+    : messages.infoUnknown
+
+  const lines: string[] = [info.name]
+  if (info.original) lines.push(info.original)
+
+  const facts: string[] = [info.type, status]
+  if (info.airLabel) facts.push(info.airLabel)
+  lines.push(facts.filter(Boolean).join(' · '))
+
+  if (info.score !== null) {
+    const votes = info.ratingTotal !== null ? `  ${info.ratingTotal} ${messages.infoVotes}` : ''
+    lines.push(`★ ${info.score}${votes}`)
+  } else {
+    lines.push(messages.infoNoScore)
+  }
+
+  if (info.totalEpisodes !== null) {
+    const aired = info.airedEpisodes !== null ? `${info.airedEpisodes}/${info.totalEpisodes}` : `${info.totalEpisodes}`
+    lines.push(`${messages.infoProgress}: ${aired} ${messages.infoEpisodes}`)
+  }
+  if (info.nextEpisode) {
+    lines.push(`${messages.infoNext}: ${info.nextEpisode.label} ${messages.episodeUnit(info.nextEpisode.episode)}`)
+  }
+  if (info.tags.length) lines.push(info.tags.join(' · '))
+  if (info.summary) lines.push('', info.summary)
+  if (info.bgmId !== null) lines.push('', `ID:${info.bgmId}`)
+
+  return lines.join('\n')
+}
+
+/**
+ * 搜索结果的文本形态。
+ *
+ * 带上评分与「已完结」标记，读者不必逐个点进去就能判断值不值得订阅——
+ * 这正是搜索时最需要的两条信息。想看完整的简介与逐集进度时再用 `anime.info`。
+ *
+ * @param now 判定「已完结」的基准时刻。不取 `Date.now()`，这样调用方能把时钟钉住。
+ */
+export function renderSearchText(items: DigestItem[], keyword: string, config: Config, now = Date.now()): string {
+  const messages = getMessages(config.locale)
+  const lines = items.map((item, index) => {
+    const when = item.firstYear ? `${item.firstYear}-${String(item.firstMonth ?? 1).padStart(2, '0')}` : ''
+    const meta = [
+      when,
+      item.type ? item.type.toUpperCase() : '',
+      item.score ? `★ ${item.score}` : '',
+      // 索引里给了结束日期且已经过去 → 已完结；没有结束日期的是长期番或在播
+      item.endMs !== null && item.endMs < now ? messages.infoFinished : '',
+    ].filter(Boolean).join(' · ')
+    const head = `${index + 1}. [ID:${item.bgmId ?? '-'}] ${truncate(item.name, TITLE_MAX)}`
+    return meta ? `${head}\n    ${meta}` : head
+  })
+  return [messages.searchHeader(items.length, keyword), ...lines].join('\n')
+}
 
 function formatItem(item: DigestItem, season: boolean, config: Config): string {
   const messages = getMessages(config.locale)

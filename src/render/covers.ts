@@ -10,7 +10,7 @@ import {
   COVER_MAX_BYTES,
   COVER_TIMEOUT_MS,
 } from '../constants'
-import type { DigestItem } from '../types'
+import type { CoverRequest } from '../types'
 import { mapLimit } from '../utils'
 import { HttpClient } from '../services/network'
 
@@ -117,7 +117,7 @@ export class CoverStore {
    *
    * `limit` 为 0 表示**不限制**，与「不加载」含义相反，因此早退判断只看 `items` 是否为空。
    */
-  async load(items: DigestItem[], limit: number): Promise<Map<string, Canvas | null>> {
+  async load(items: CoverRequest[], limit: number): Promise<Map<string, Canvas | null>> {
     const result = new Map<string, Canvas | null>()
     if (!items.length) return result
     const capped = limit > 0

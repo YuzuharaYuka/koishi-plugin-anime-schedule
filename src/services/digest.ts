@@ -911,6 +911,7 @@ export class DigestService {
       bgmId: entry.bangumiId,
       date,
       time,
+      atMs: candidate.atMs,
       episodeCount: candidate.episode,
       episode: this.messages.episodeShort(candidate.episode),
       // 一次性放送（剧场版等）没有「第几话」的概念，渲染层据此隐藏集数
@@ -928,7 +929,7 @@ export class DigestService {
       subscribed: entry.bangumiId !== null && subscribed.has(`bgm:${entry.bangumiId}`),
       airLabel: `${this.describeDate(candidate.atMs)} ${time}`.trim(),
       type: entry.type,
-      atMs: candidate.atMs,
+      endMs: entry.endMs,
     }
   }
 
@@ -1072,6 +1073,7 @@ export class DigestService {
       '',
       groupOverride ? groupOverride(items) : this.groupOf(kind, window, items),
       kind === 'sub' ? this.messages.noAiringSub(subscribed.size) : this.emptyTextOf(kind),
+      now,
     )
   }
 
@@ -1212,7 +1214,7 @@ export class DigestService {
   async buildSeason(seasonOffset = 0, subscribed: Set<string> = EMPTY_SETS, now = Date.now()): Promise<Digest> {
     await this.prepare()
     const { year, startMonth } = this.resolveSeason(seasonOffset, now)
-    return this.buildSeasonOf(year, startMonth, subscribed)
+    return this.buildSeasonOf(year, startMonth, subscribed, now)
   }
 
   /** 由「相对当前季度的偏移」算出目标季度 */
@@ -1226,7 +1228,7 @@ export class DigestService {
   }
 
   /** 构建某个具体季度的新番概览 */
-  private async buildSeasonOf(year: number, startMonth: number, subscribed: Set<string>): Promise<Digest> {
+  private async buildSeasonOf(year: number, startMonth: number, subscribed: Set<string>, now: number): Promise<Digest> {
     const seasonName = SEASON_NAMES[startMonth] ?? ''
     const label = this.messages.seasonLabel(year, startMonth)
     const header = this.messages.seasonHeader(label)
@@ -1240,7 +1242,7 @@ export class DigestService {
 
     const premieres = this.index.season(year, startMonth)
     if (!premieres.length) {
-      return { ...this.finish('season', header, prefix, [], this.messages.emptySeason, label), rangeLabel }
+      return { ...this.finish('season', header, prefix, [], this.messages.emptySeason, now, label), rangeLabel }
     }
 
     // 季表只展示「首播那一场」，不判断完结，因此不必取逐集档期（省掉每部一个请求）
@@ -1272,7 +1274,7 @@ export class DigestService {
     )
 
     return {
-      ...this.finish('season', header, prefix, this.groupByDay(items), this.messages.emptySeason, label),
+      ...this.finish('season', header, prefix, this.groupByDay(items), this.messages.emptySeason, now, label),
       rangeLabel,
     }
   }
@@ -1378,17 +1380,25 @@ export class DigestService {
   // #region 摘要与截断
 
   /** 收尾：统计、截断与摘要文案 */
+  /**
+   * 收尾：套上上限、算统计行、拼出最终 `Digest`。
+   *
+   * `now` 必须由调用方传入而**不能取 `Date.now()`**：单日时间轴要按它画「现在」的
+   * 分界线，而条目时刻是按传入的 `now` 推算的。若这里换成真实时间，快照与预览里
+   * 分界线就会落在与条目不对应的一天上（曾经如此，预览图上出现「10/12 的列表 + 18:34 的现在」）。
+   */
   private finish(
     kind: DigestKind,
     header: string,
     summaryPrefix: string,
     groups: DigestGroup[],
     emptyText: string,
+    now: number,
     seasonLabel = '',
   ): Digest {
     if (!groups.length) {
       debugLog('[digest] %s 无内容 (%s)', kind, emptyText)
-      return { kind, header, summary: emptyText, groups: [], seasonLabel, generatedAt: Date.now() }
+      return { kind, header, summary: emptyText, groups: [], seasonLabel, generatedAt: now }
     }
     const limited = this.applyLimit(groups)
     const items = groups.flatMap((group) => group.items)
@@ -1402,7 +1412,7 @@ export class DigestService {
       summary: limited.truncated ? `${base}，${limited.truncated}` : base,
       groups: limited.groups,
       seasonLabel,
-      generatedAt: Date.now(),
+      generatedAt: now,
     }
   }
 

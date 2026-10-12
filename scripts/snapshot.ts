@@ -65,6 +65,7 @@ function slimDigest(digest: Digest) {
     header: digest.header,
     summary: digest.summary,
     seasonLabel: digest.seasonLabel,
+    now: digest.generatedAt,
     rangeLabel: digest.rangeLabel,
     groups: digest.groups.map((group) => ({
       label: group.label,

@@ -31,6 +31,15 @@ function makeCtx(): any {
   return createContext({ baseDir: resolve(process.cwd(), 'target/anime-smoke') })
 }
 
+/**
+ * 固定时钟。
+ *
+ * 与 `snapshot.ts` 同一个理由：日报会画一条「现在」的分界线，而每一场的时刻都是按
+ * 当天推算的。若这里用真实时间，分界线会落在与条目不对应的一天的位置上，
+ * 两张图之间也没法比对。可用 `ANIME_SNAPSHOT_NOW` 覆盖。
+ */
+const FIXED_NOW = Number(process.env.ANIME_SNAPSHOT_NOW ?? Date.UTC(2026, 9, 12, 10, 30, 0))
+
 async function main() {
   const ctx = makeCtx()
   const base = ConfigSchema({} as never) as unknown as Config
@@ -61,7 +70,7 @@ async function main() {
       .filter((_, index) => index % 4 === 0)
       .map((item) => item.tid),
   )
-  const seasonForSubs = await digest.buildSeason(0)
+  const seasonForSubs = await digest.buildSeason(0, new Set(), FIXED_NOW)
   for (const item of seasonForSubs.groups.flatMap((group) => group.items).slice(0, 3)) subscribed.add(item.tid)
   console.log('预览用已订阅集合:', [...subscribed].join(' '))
 
@@ -69,6 +78,7 @@ async function main() {
 
   const payloadOf = (item: Digest): RenderPayload => ({
     kind: item.kind,
+    now: item.generatedAt,
     header: item.header,
     summary: item.summary,
     groups: item.groups,
@@ -78,10 +88,10 @@ async function main() {
   })
 
   const jobs: { name: string; build: () => Promise<Digest> }[] = [
-    { name: 'daily', build: () => digest.buildDaily(0, subscribed) },
-    { name: 'night', build: () => digest.buildNight(subscribed) },
-    { name: 'weekly', build: () => digest.buildWeekly(subscribed) },
-    { name: 'season', build: () => digest.buildSeason(0, subscribed) },
+    { name: 'daily', build: () => digest.buildDaily(0, subscribed, FIXED_NOW) },
+    { name: 'night', build: () => digest.buildNight(subscribed, FIXED_NOW) },
+    { name: 'weekly', build: () => digest.buildWeekly(subscribed, FIXED_NOW) },
+    { name: 'season', build: () => digest.buildSeason(0, subscribed, FIXED_NOW) },
   ]
 
   const built: Digest[] = []

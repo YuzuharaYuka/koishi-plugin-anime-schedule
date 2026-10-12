@@ -333,6 +333,32 @@ export interface Messages {
   subscribedBadge: string
   /** 日期列超出上限时的提示 */
   moreItems: (count: number) => string
+
+  // ── 作品详情卡（`anime.info`）──
+  /** 详情卡页脚的数据更新时间 */
+  infoUpdated: (moment: string) => string
+  /** 连载状态 */
+  infoAiring: string
+  infoFinished: string
+  infoUpcoming: string
+  infoUnknown: string
+  /** 区块标题 */
+  infoSummary: string
+  infoProgress: string
+  infoScoreBoard: string
+  /** 单位与占位文案 */
+  infoVotes: string
+  infoEpisodes: string
+  infoAired: string
+  /** 详情里「下一话」的标签 */
+  infoNext: string
+  /** 拿不到评分或档期时的占位 */
+  infoNoScore: string
+  infoNoSchedule: string
+  /** 搜索结果的标题行 */
+  searchHeader: (count: number, keyword: string) => string
+  /** 时间轴上「现在」的分界线标签 */
+  nowLabel: (clock: string) => string
 }
 
 const ZH_CN: Messages = {
@@ -362,6 +388,23 @@ const ZH_CN: Messages = {
   todayBadge: '今天',
   subscribedBadge: '已订阅',
   moreItems: (count) => `还有 ${count} 部`,
+
+  infoUpdated: (moment) => `数据更新于 ${moment}`,
+  infoAiring: '连载中',
+  infoFinished: '已完结',
+  infoUpcoming: '未开播',
+  infoUnknown: '状态未知',
+  infoSummary: '简介',
+  infoProgress: '放送进度',
+  infoScoreBoard: '评分分布',
+  infoVotes: '人评分',
+  infoEpisodes: '话',
+  infoAired: '已播出',
+  infoNext: '下一话',
+  infoNoScore: '评分人数不足',
+  infoNoSchedule: '暂无逐集档期',
+  nowLabel: (clock) => `现在 ${clock}`,
+  searchHeader: (count, keyword) => `找到 ${count} 部与 "${keyword}" 相关的作品，用 \`anime.info <序号>\` 看详情、\`anime.sub <序号>\` 订阅:`,
 }
 
 const JA_JP: Messages = {
@@ -392,6 +435,23 @@ const JA_JP: Messages = {
   todayBadge: '今日',
   subscribedBadge: '登録済み',
   moreItems: (count) => `他 ${count} 作品`,
+
+  infoUpdated: (moment) => `データ更新 ${moment}`,
+  infoAiring: '放送中',
+  infoFinished: '完結',
+  infoUpcoming: '放送前',
+  infoUnknown: '状態不明',
+  infoSummary: 'あらすじ',
+  infoProgress: '放送進捗',
+  infoScoreBoard: 'スコア分布',
+  infoVotes: '人評価',
+  infoEpisodes: '話',
+  infoAired: '放送済み',
+  infoNext: '次回',
+  infoNoScore: '評価者不足',
+  infoNoSchedule: '話数情報なし',
+  nowLabel: (clock) => `現在 ${clock}`,
+  searchHeader: (count, keyword) => `「${keyword}」に一致する作品が ${count} 件。\`anime.info <番号>\` で詳細、\`anime.sub <番号>\` で登録:`,
 }
 
 const EN_US: Messages = {
@@ -422,6 +482,23 @@ const EN_US: Messages = {
   todayBadge: 'Today',
   subscribedBadge: 'Subscribed',
   moreItems: (count) => `+${count} more`,
+
+  infoUpdated: (moment) => `Updated ${moment}`,
+  infoAiring: 'Airing',
+  infoFinished: 'Finished',
+  infoUpcoming: 'Upcoming',
+  infoUnknown: 'Unknown',
+  infoSummary: 'Synopsis',
+  infoProgress: 'Progress',
+  infoScoreBoard: 'Score distribution',
+  infoVotes: 'ratings',
+  infoEpisodes: 'eps',
+  infoAired: 'Aired',
+  infoNext: 'Next',
+  infoNoScore: 'Too few ratings',
+  infoNoSchedule: 'No episode schedule',
+  nowLabel: (clock) => `Now ${clock}`,
+  searchHeader: (count, keyword) => `Found ${count} titles matching "${keyword}". Use \`anime.info <n>\` for details or \`anime.sub <n>\` to subscribe:`,
 }
 
 export const MESSAGES: Record<PluginLocale, Messages> = {

@@ -6,7 +6,9 @@ import type { Config } from '../config'
 import type { DigestGroup, DigestItem, RenderPayload } from '../types'
 import { font, FONT_SIZE, registerFonts } from './fonts'
 import { CoverStore } from './covers'
-import { getTimeZoneOffsetMs } from '../utils/time'
+import { formatClock, formatMoment, getTimeZoneOffsetMs } from '../utils/time'
+import type { SubjectInfo } from '../services/info'
+import { renderInfoCard } from './info'
 import {
   drawCard,
   drawContainImage,
@@ -42,6 +44,9 @@ interface CardLine {
  * 封面统一按 `1 : 1.4` 等比完整显示，文字块的竖直位置只由版式常量决定，
  * 因此同一版面的每一条都对齐在同一条基线上。
  */
+/** 「现在」分界线占用的高度，与 drawNowMarker 保持一致 */
+const NOW_MARKER_HEIGHT = 26
+
 export class Renderer {
   private readonly covers: CoverStore
   private ready = false
@@ -81,6 +86,33 @@ export class Renderer {
       canvas.height,
       encoded.length,
       this.config.render.jpegQuality,
+    )
+    return encoded
+  }
+
+  /**
+   * 渲染单部作品的详情卡（`anime.info`）。
+   *
+   * 与推送表共用同一份封面缓存与字体，但排版完全独立——见 `render/info.ts`。
+   * 封面单独取一张，不复用推送表的批量加载。
+   */
+  async renderInfo(info: SubjectInfo): Promise<Buffer> {
+    this.init()
+    const started = Date.now()
+    const covers = await this.covers.load([info], 1)
+    const cover = covers.get(info.coverUrl) ?? null
+    const card = renderInfoCard({
+      info,
+      messages: this.messages,
+      cover,
+      footer: this.messages.infoUpdated(formatMoment(Date.now(), this.config.timeZone, this.messages.weekdayNames)),
+    })
+    const canvas = createCanvas(card.width, card.height)
+    card.draw(canvas.getContext('2d'))
+    const encoded = await canvas.encode('jpeg', this.config.render.jpegQuality)
+    this.logger.debug(
+      '[render] info 出图完成 (%dms)，尺寸 %dx%d，%d bytes',
+      Date.now() - started, card.width, card.height, encoded.length,
     )
     return encoded
   }
@@ -254,9 +286,12 @@ export class Renderer {
     const width = L.timelineWidth
     // 只有一组时不画日期节点，高度按实际结构计算
     const showDayHeader = groups.length > 1
+    // 「现在」分界线自己占一段高度，只有单日/深夜档会画
+    const showNow = payload.kind !== 'weekly'
     const height = L.headerHeight
       + all.length * (L.rowHeight + L.rowGap)
       + (showDayHeader ? groups.length * L.timelineDayHeaderHeight : 0)
+      + (showNow ? NOW_MARKER_HEIGHT : 0)
       + L.footerHeight
 
     const { canvas, ctx } = this.createSurface(width, height)
@@ -265,6 +300,7 @@ export class Renderer {
     const spineX = L.padding + L.timelineSpine
     let cursor = L.headerHeight + L.rowGap
     let index = 0
+    let nowDrawn = false
 
     for (const group of groups) {
       if (showDayHeader) {
@@ -272,6 +308,13 @@ export class Renderer {
         cursor += L.timelineDayHeaderHeight
       }
       for (const item of group.items) {
+        // 画在第一条尚未播出的条目之前；全部已播时画在末尾。
+        // 插入前先把光标下移半个行距，让虚线落在「上一条卡片底」与「下一条卡片顶」的正中，
+        // 而不是紧贴上一条。标记自带的高度正好抵掉这半个行距，总高因此不必重算。
+        if (showNow && !nowDrawn && item.atMs > payload.now) {
+          nowDrawn = true
+          cursor = this.drawNowMarker(ctx, payload.now, spineX, cursor + L.rowGap / 2, width)
+        }
         const y = cursor
         this.drawTimelineSpine(ctx, spineX, y - L.rowGap, y + L.rowHeight, index === 0)
         this.drawTimelineEntry(ctx, item, covers.get(item.coverUrl) ?? null, spineX, y, width, night)
@@ -279,9 +322,67 @@ export class Renderer {
         index++
       }
     }
+    if (showNow && !nowDrawn) {
+      this.drawNowMarker(ctx, payload.now, spineX, cursor, width)
+    }
 
     this.drawFooter(ctx, payload, width, height)
     return canvas
+  }
+
+  /**
+   * 时间轴上的「现在」分界线。
+   *
+   * 画成一条横贯的虚线 + 右端的时刻，读者一眼就能看出上下哪边已经播了。
+   * 参考 bangumi.online 的播出时间轴：没有这条线时，`00:00` 的场次和 `23:00` 的场次
+   * 长得一模一样，用户得自己对表才知道现在几点。
+   *
+   * @returns 画完之后的新光标位置（线自己占一段高度）
+   */
+  private drawNowMarker(
+    ctx: SKRSContext2D,
+    now: number,
+    spineX: number,
+    y: number,
+    width: number,
+  ): number {
+    const L = IMAGE_LAYOUT
+    const height = NOW_MARKER_HEIGHT
+    const centreY = y + height / 2
+
+    // 左端圆点：与时间轴的圆点同一尺寸，视觉上属于同一条轴
+    ctx.beginPath()
+    ctx.arc(spineX, centreY, 5, 0, Math.PI * 2)
+    ctx.fillStyle = THEME.accent
+    ctx.fill()
+    ctx.lineWidth = 2.5
+    ctx.strokeStyle = THEME.surface
+    ctx.stroke()
+
+    const left = spineX + 14
+    const right = width - L.padding
+    ctx.save()
+    ctx.setLineDash([4, 4])
+    ctx.lineWidth = 1.5
+    ctx.strokeStyle = THEME.accent
+    ctx.beginPath()
+    ctx.moveTo(left, centreY)
+    ctx.lineTo(right, centreY)
+    ctx.stroke()
+    ctx.restore()
+
+    // 时刻压在虚线上、靠右，底色垫一层让线条不穿过文字
+    const label = this.messages.nowLabel(formatClock(now, this.config.timeZone))
+    ctx.font = font(FONT_SIZE.cardMeta, true)
+    const textWidth = ctx.measureText(label).width
+    const boxX = right - textWidth - 10
+    fillRoundRect(ctx, boxX, centreY - 9, textWidth + 10, 18, 9, THEME.surface)
+    ctx.fillStyle = THEME.accent
+    ctx.textAlign = 'left'
+    ctx.textBaseline = 'middle'
+    ctx.fillText(label, boxX + 5, centreY + 0.5)
+
+    return y + height
   }
 
   /** 时间轴上的日期节点：圆点 + 日期 + 条目数 */
