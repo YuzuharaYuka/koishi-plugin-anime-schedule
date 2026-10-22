@@ -29,8 +29,9 @@ export class BangumiDataLoader {
   constructor(
     private ctx: Context,
     private logger: Logger,
+    http: HttpClient,
   ) {
-    this.http = new HttpClient(ctx, logger)
+    this.http = http
   }
 
   private get cachePath(): string {

@@ -2,8 +2,6 @@ import { IMAGE_THEME } from '../constants'
 import type { SKRSContext2D } from '@napi-rs/canvas'
 import { font } from './fonts'
 
-export type Theme = typeof IMAGE_THEME
-
 /** 主题别名，渲染层统一用 `theme.xxx` 取色 */
 export const THEME = IMAGE_THEME
 
@@ -164,7 +162,7 @@ export function drawContainImage(
   width: number,
   height: number,
   options: { radius?: number; background?: string; border?: boolean; shadow?: boolean } = {},
-): { width: number; height: number } {
+): void {
   const radius = options.radius ?? 6
   // 投影画在底衬上（而不是裁切后的图片上），否则圆角外的阴影会被裁掉
   if (options.shadow) {
@@ -177,7 +175,7 @@ export function drawContainImage(
   } else {
     fillRoundRect(ctx, x, y, width, height, radius, options.background ?? THEME.badge)
   }
-  if (!image.width || !image.height) return { width: 0, height: 0 }
+  if (!image.width || !image.height) return
 
   const scale = Math.min(width / image.width, height / image.height)
   const drawWidth = Math.max(1, Math.floor(image.width * scale))
@@ -198,5 +196,4 @@ export function drawContainImage(
   if (options.border !== false) {
     strokeRoundRect(ctx, x + 0.5, y + 0.5, width - 1, height - 1, radius, THEME.cardBorder)
   }
-  return { width: drawWidth, height: drawHeight }
 }

@@ -17,7 +17,6 @@ import {
   fillRoundRect,
   fitText,
   THEME,
-  type Theme,
 } from './canvas'
 
 
@@ -191,7 +190,6 @@ export class Renderer {
   /** 选画布宽度：各版面在常量里各有固定宽度，保证同一版面每次出图尺寸一致 */
   private canvasWidth(payload: RenderPayload): number {
     const L = IMAGE_LAYOUT
-    if (payload.kind === 'season' && this.config.output.layout !== 'list') return L.seasonWidth
     if (payload.kind === 'weekly') return L.weekWidth
     if (this.config.output.layout === 'list') return L.listWidth
     return L.timelineWidth
@@ -216,7 +214,6 @@ export class Renderer {
     const width = L.timelineWidth
     // 只有一组时不画日期节点
     const showDayHeader = groups.length > 1
-    const showNow = payload.kind !== 'weekly'
     const spineX = L.padding + L.timelineLabelWidth
 
     // 先排出各元素的中线：主轴连线、圆点与「现在」标记都以它定位，必须算完再画
@@ -238,7 +235,7 @@ export class Renderer {
       }
       for (const item of group.items) {
         // 「现在」插在第一条未播出的条目之前
-        if (showNow && !nowPlaced && item.atMs > payload.now) {
+        if (!nowPlaced && item.atMs > payload.now) {
           nowPlaced = true
           elements.push({ kind: 'now', centre: cursor + NOW_MARKER_HEIGHT / 2 })
           cursor += NOW_MARKER_HEIGHT + separatorGap
@@ -248,7 +245,7 @@ export class Renderer {
       }
     }
     // 全部已播时「现在」落在末尾，与末条留出间距
-    if (showNow && !nowPlaced) {
+    if (!nowPlaced) {
       cursor += separatorGap
       elements.push({ kind: 'now', centre: cursor + NOW_MARKER_HEIGHT / 2 })
       cursor += NOW_MARKER_HEIGHT
@@ -665,9 +662,6 @@ export class Renderer {
       cursor += ctx.measureText(item.time).width + 8
       ctx.font = font(FONT_SIZE.weekTime)
       ctx.fillText(fitText(ctx, episode, Math.max(20, x + width - 8 - cursor)), cursor, y + 18)
-      cursor += ctx.measureText(episode).width + 7
-    } else {
-      cursor += ctx.measureText(item.time).width + 7
     }
     // 第二行起：标题（最多两行）
     ctx.font = font(FONT_SIZE.weekTitle, true)

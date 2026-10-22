@@ -44,8 +44,10 @@ function resolveEpisodeTotal(subject: BangumiSubject): number | null {
  *
  * **不用 `rating.score`**：Bangumi 只保留一位小数。API 同时给了 `rating.count`（各分数段人数），
  * 据此算**算术平均**即可拿到真实精度，四舍五入到一位后与网站显示一致；`count` 缺失时退回 `score`。
+ *
+ * 详情卡（`services/info.ts`）复用同一份，避免同一套算法写两处。
  */
-function computeScore(rating: BangumiSubject['rating']): number | null {
+export function computeScore(rating: BangumiSubject['rating'] | undefined): number | null {
   const count = rating?.count
   if (count && typeof count === 'object') {
     let sum = 0
@@ -69,7 +71,6 @@ function computeScore(rating: BangumiSubject['rating']): number | null {
 export class Localizer {
   private readonly memory = new Map<number, LocalizeCacheEntry>()
   private readonly cachePath: string
-  private readonly http: HttpClient
   private loaded = false
   private loadPromise: Promise<void> | null = null
   private dirty = false
@@ -79,8 +80,8 @@ export class Localizer {
     private ctx: Context,
     private config: Config,
     private logger: Logger,
+    private http: HttpClient,
   ) {
-    this.http = new HttpClient(ctx, logger)
     this.cachePath = resolve(ctx.baseDir, 'data', 'anime-schedule', LOCALIZE_CACHE_FILE)
   }
 
@@ -109,6 +110,14 @@ export class Localizer {
               this.memory.set(id, { ...entry, subjectId: id })
             }
           }
+        } else if (parsed) {
+          // 版本不符时整份缓存都不采信。这里必须留一条日志：否则「缓存忽然变空、
+          // 下一次写入又把旧数据覆盖掉」会完全无声，只能靠条目数异常缩小去猜
+          this.logger.info(
+            '[localize] 缓存版本 %s 与当前 %d 不符，本次重新构建',
+            parsed.version ?? '(无)',
+            LOCALIZE_CACHE_VERSION,
+          )
         }
         debugLog('[localize] 缓存载入完成，条目数: %d', this.memory.size)
       } catch (error) {
@@ -254,9 +263,10 @@ export class Localizer {
         firstAirMs: times?.first ?? stale?.firstAirMs ?? null,
         lastAirMs: times?.last ?? stale?.lastAirMs ?? null,
         airDate: subject.date ?? null,
-        // `cachedAt` 只在真的取全（含档期）时推进，否则标题封面的保质期会被每天一次的
-        // 评分刷新无限续期，等于永远不校验
-        cachedAt: times !== null || !stale ? Date.now() : stale.cachedAt,
+        // 标题、封面与评分都来自本次 `GET /v0/subjects/{id}`，因此 `cachedAt` 一并推进。
+        // 旧实现只在「取了逐集档期」时推进，导致超过 `cacheTtlDays` 的条目永远判过期：
+        // 评分刷新不会补取档期，于是 `cachedAt` 再也不动，每次调用都重新请求一次。
+        cachedAt: Date.now(),
         scoreCachedAt: Date.now(),
       }
       this.memory.set(id, entry)

@@ -36,9 +36,10 @@ async function main() {
   const config: Config = normalizeConfig(ConfigSchema({} as never) as unknown as Config)
 
   const logger = new Logger('bench')
-  const index = new BangumiDataIndex(ctx, logger)
-  const airing = new AiringStatusService(ctx, logger)
-  const digest = new DigestService(ctx, config, logger, index, airing)
+  const http = new HttpClient(ctx, logger)
+  const index = new BangumiDataIndex(ctx, logger, http)
+  const airing = new AiringStatusService(ctx, logger, http)
+  const digest = new DigestService(ctx, config, logger, index, http, airing)
   const renderer = new Renderer(ctx, config, logger, new HttpClient(ctx, logger))
   const messages = getMessages(config.locale)
 

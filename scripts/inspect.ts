@@ -12,6 +12,7 @@
  * 完结判定交给 AniList，AniList 没有的条目退回 Bangumi 逐集档期。
  */
 import { Logger } from 'koishi'
+import { HttpClient } from '../src/services/network'
 import { createContext } from './context'
 import { Config as ConfigSchema, normalizeConfig, type Config } from '../src/config'
 import { BangumiDataIndex, type IndexEntry } from '../src/data/bangumi-data'
@@ -99,8 +100,10 @@ async function main(): Promise<void> {
   const config = normalizeConfig({ ...base, timeZone: 'Asia/Shanghai' })
   const logger = new Logger('inspect')
 
-  const index = new BangumiDataIndex(ctx, logger)
-  const airing = new AiringStatusService(ctx, logger)
+  const http = new HttpClient(ctx, logger)
+
+  const index = new BangumiDataIndex(ctx, logger, http)
+  const airing = new AiringStatusService(ctx, logger, http)
   await index.load()
 
   const matched: IndexEntry[] = /^\d+$/.test(query)

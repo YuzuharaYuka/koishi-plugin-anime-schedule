@@ -1,7 +1,7 @@
 {
   "name": "koishi-plugin-anime-schedule",
-  "description": "番剧更新表与订阅提醒：每日 / 深夜档 / 本周 / 本季四张表，支持单部订阅",
-  "version": "1.0.9",
+  "description": "番剧时间表与订阅提醒：提供日 / 周 / 季三表，支持定时推送、指定订阅、搜索和详情展示",
+  "version": "1.1.0",
   "main": "lib/index.js",
   "typings": "lib/index.d.ts",
   "files": [
@@ -42,7 +42,7 @@
   },
   "koishi": {
     "description": {
-      "zh": "番剧更新表与订阅提醒：每日 / 深夜档 / 本周 / 本季四张表，支持单部订阅"
+      "zh": "番剧时间表与订阅提醒：日 / 周 / 季三表，支持定时推送、指定订阅、搜索和详情展示"
     },
     "service": {
       "required": [

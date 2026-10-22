@@ -47,7 +47,6 @@ const L = {
 
   /** 评分图表：10 柱 × (柱宽 + 间距)，另留 10 个刻度数字的位置 */
   scoreChartWidth: 240,
-  footerGapColumns: 24,
   scoreChartHeight: 60,
   scoreAxisHeight: 18,
   scoreBarWidth: 18,
@@ -111,7 +110,7 @@ export function renderInfoCard(card: InfoCard): { width: number; height: number;
   const progressColumnWidth = L.epPerRow * L.epMinWidth + (L.epPerRow - 1) * L.epGap
   const footerTop = L.padding + headerHeight + summaryHeight + L.sectionGap
   const bandTop = footerTop + L.sectionTitleSize + L.sectionTitleGap
-  const band = bandMetrics(bandTop, info.totalEpisodes, progressColumnWidth, scoreColumnWidth)
+  const band = bandMetrics(bandTop, info.totalEpisodes, progressColumnWidth)
   // 两列顶部对齐、各自决定高度，取较高者作为底块高度
   const footerHeight = Math.max(band.progressHeight, band.scoreHeight)
   const height = bandTop + footerHeight + L.footerGap + L.padding + L.footerHeight
@@ -200,7 +199,7 @@ export function renderInfoCard(card: InfoCard): { width: number; height: number;
     drawScoreTile(
       ctx, info, messages,
       scoreColumnX,
-      scoreColumnWidth, titleLine, band.baseline,
+      titleLine, band.baseline,
     )
 
     // ── 页脚：左边条目 ID（供 `anime.sub` / `anime.info` 直接抄），右边数据更新时间 ──
@@ -301,9 +300,7 @@ function bandMetrics(
   bandTop: number,
   total: number | null,
   progressWidth: number,
-  scoreWidth: number,
 ): { progressHeight: number; scoreHeight: number; baseline: number; grid: ReturnType<typeof gridMetrics> | null } {
-  void scoreWidth
   const grid = total !== null && total > 0 && total <= L.epGridMax
     ? gridMetrics(total, progressWidth, L.epPerRow)
     : null
@@ -339,7 +336,6 @@ function drawProgressTile(
   ctx.textAlign = 'left'
   ctx.textBaseline = 'top'
   ctx.fillText(value, x + titleWidth, lineY + 1)
-  void columnWidth
 
   if (!grid) {
     // 长期连载番或话数未知：只给一行说明，不铺胶囊，否则几百话会画出上百行
@@ -390,7 +386,6 @@ function drawScoreTile(
   info: SubjectInfo,
   messages: Messages,
   x: number,
-  columnWidth: number,
   titleY: number,
   baseline: number,
 ): void {

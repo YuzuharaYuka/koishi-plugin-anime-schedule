@@ -55,9 +55,10 @@ async function main() {
   })
   const logger = new Logger('preview')
   setupDebug(true, logger)
-  const index = new BangumiDataIndex(ctx, logger)
+  const http = new HttpClient(ctx, logger)
+  const index = new BangumiDataIndex(ctx, logger, http)
   await index.load()
-  const digest = new DigestService(ctx, config, logger, index)
+  const digest = new DigestService(ctx, config, logger, index, http)
 
   const renderer = new Renderer(ctx, config, logger, new HttpClient(ctx, logger))
   renderer.init()

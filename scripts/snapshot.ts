@@ -20,6 +20,7 @@
  *   Bangumi 侧的实时变动带偏，与被重构的逻辑无关，因此只记「有没有」。
  */
 import { promises as fs } from 'fs'
+import { HttpClient } from '../src/services/network'
 import { resolve } from 'path'
 import { Logger } from 'koishi'
 import { BangumiDataIndex } from '../src/data/bangumi-data'
@@ -105,9 +106,11 @@ async function main(): Promise<void> {
   const config = normalizeConfig({ ...base, timeZone: 'Asia/Shanghai' })
   const logger = new Logger('snapshot')
 
-  const index = new BangumiDataIndex(ctx, logger)
-  const airing = new AiringStatusService(ctx, logger)
-  const digest: any = new DigestService(ctx, config, logger, index, airing)
+  const http = new HttpClient(ctx, logger)
+
+  const index = new BangumiDataIndex(ctx, logger, http)
+  const airing = new AiringStatusService(ctx, logger, http)
+  const digest: any = new DigestService(ctx, config, logger, index, http, airing)
 
   await index.load()
 

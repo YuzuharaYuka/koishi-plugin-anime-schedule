@@ -4,6 +4,7 @@
  * 用法（先 `cd external/anime-schedule`）: npx tsx scripts/check-season.ts
  */
 import { resolve } from 'path'
+import { HttpClient } from '../src/services/network'
 import { Logger } from 'koishi'
 import { createContext } from './context'
 import { Config as ConfigSchema, normalizeConfig, type Config } from '../src/config'
@@ -19,8 +20,10 @@ async function main(): Promise<void> {
   const config = normalizeConfig({ ...base, timeZone: 'Asia/Shanghai' })
   const logger = new Logger('check')
 
-  const index = new BangumiDataIndex(ctx, logger)
-  const digest: any = new DigestService(ctx, config, logger, index)
+  const http = new HttpClient(ctx, logger)
+
+  const index = new BangumiDataIndex(ctx, logger, http)
+  const digest: any = new DigestService(ctx, config, logger, index, http)
   await index.load()
 
   const offsets = [-2, -1, 0, 1, 2, 3]

@@ -11,8 +11,13 @@
  */
 import type { Context, Logger } from 'koishi'
 import type { AiringState, AniListStatus } from '../types'
-import { ANILIST_API_URL, ANILIST_BATCH_SIZE, ANILIST_MIN_INTERVAL_MS } from '../constants'
-import { debugLog, errorMessage, unwrapPayload } from '../utils'
+import {
+  ANILIST_API_URL,
+  ANILIST_BATCH_SIZE,
+  ANILIST_COOLDOWN_MS,
+  ANILIST_MIN_INTERVAL_MS,
+} from '../constants'
+import { debugLog, errorMessage, errorStatus, unwrapPayload } from '../utils'
 import type { MatchCandidate, MatchTarget } from '../data/anilist-match'
 import { matchByTitle, normalizeTitle } from '../data/anilist-match'
 import { HttpClient } from './network'
@@ -85,7 +90,6 @@ export class AiringStatusService {
   private readonly idByTitle = new Map<string, number | null>()
   /** 已经用掉的标题搜索次数，见 `TITLE_SEARCH_BUDGET` */
   private titleSearches = 0
-  private readonly http: HttpClient
   /** 冷却截止时刻：收到 429 后到这时刻之前不再发请求 */
   private cooldownUntil = 0
   /** 上一次请求结束的时刻，用于保证最小间隔 */
@@ -96,9 +100,8 @@ export class AiringStatusService {
   constructor(
     private ctx: Context,
     private logger: Logger,
-  ) {
-    this.http = new HttpClient(ctx, logger)
-  }
+    private http: HttpClient,
+  ) {}
 
   /** 当前是否处于限流冷却中 */
   get coolingDown(): boolean {
@@ -109,9 +112,6 @@ export class AiringStatusService {
   ensure(): Promise<void> {
     return Promise.resolve()
   }
-
-  /** 条款要求不落盘，因此没有持久化动作；保留此方法兼容调用方 */
-  async save(): Promise<void> {}
 
   private isFresh(entry: AiringState, ttlDays: number): boolean {
     return Date.now() - entry.cachedAt < ttlDays * 24 * 60 * 60 * 1000
@@ -293,7 +293,7 @@ export class AiringStatusService {
    * 服务被停用）；`false` 表示普通失败，调用方按「取不到就跳过」处理。
    */
   private handleRequestError(error: unknown): boolean {
-    const status = (error as { response?: { status?: number } })?.response?.status
+    const status = errorStatus(error)
     if (status === 429 || status === 403) {
       // 429：超限封禁 1 分钟；403：API 被临时停用。两种情况都进入冷却
       this.cooldownUntil = Date.now() + ANILIST_COOLDOWN_MS
@@ -328,5 +328,3 @@ export class AiringStatusService {
   }
 }
 
-/** 收到 429 / 403 后的冷却时长 */
-const ANILIST_COOLDOWN_MS = 5 * 60 * 1000

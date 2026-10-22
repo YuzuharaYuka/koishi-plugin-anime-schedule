@@ -2,21 +2,20 @@ import type { Context, Logger } from 'koishi'
 import {
   ANILIST_API_URL,
   ANILIST_BATCH_SIZE,
+  ANILIST_COOLDOWN_MS,
   ANILIST_MIN_INTERVAL_MS,
   BANGUMI_API_HOST,
 } from '../constants'
 import type { HttpClient } from './network'
-import type { Localizer } from './localizer'
+import { computeScore, type Localizer } from './localizer'
 import { debugLog, errorMessage, errorStatus, mapLimit, unwrapPayload } from '../utils'
+import { today } from '../utils/time'
 
 /** nime.info 里 AniList 状态的缓存时长；详情页的状态不需要秒级新鲜 */
 const INFO_ANILIST_TTL_MS = 10 * 60 * 1000
 
 /** 详情卡的取数并发。Bangumi 文档限 1 请求/秒，不宜更高 */
 export const INFO_FETCH_CONCURRENCY = 4
-
-/** AniList 收到 429/403 后的冷却时长，与 `airing.ts` 同策略 */
-const ANILIST_COOLDOWN_MS = 5 * 60 * 1000
 
 /** 等待若干毫秒；用于批次之间保持最小间隔 */
 function wait(ms: number): Promise<void> {
@@ -130,6 +129,12 @@ export class InfoService {
   /** AniList 判定超限后的冷却截止时刻，与 `airing.ts` 同一策略 */
   private aniListCooldownUntil = 0
 
+  /** 只有限流（429）与停用（403）才进入冷却；普通网络错误不该让详情卡退化 5 分钟 */
+  private coolDownIfThrottled(error: unknown): void {
+    const status = errorStatus(error)
+    if (status === 429 || status === 403) this.aniListCooldownUntil = Date.now() + ANILIST_COOLDOWN_MS
+  }
+
   constructor(
     private ctx: Context,
     private logger: Logger,
@@ -205,7 +210,8 @@ export class InfoService {
         }
       } catch (error) {
         debugLog('[info] AniList 批量查询 %d 个 ID 失败: %s', batch.length, errorMessage(error))
-        this.aniListCooldownUntil = Date.now() + ANILIST_COOLDOWN_MS
+        // 只有限流/停用才值得冷却：普通网络错误冷却 5 分钟会让详情卡无谓地退化
+        this.coolDownIfThrottled(error)
         return
       }
     }
@@ -270,8 +276,7 @@ export class InfoService {
     } catch (error) {
       // AniList 取不到不影响主体信息，状态退化为按日期推算
       this.logger.warn('[info] AniList 查询「%s」失败: %s', title, errorMessage(error))
-      const status = errorStatus(error)
-      if (status === 429 || status === 403) this.aniListCooldownUntil = Date.now() + ANILIST_COOLDOWN_MS
+      this.coolDownIfThrottled(error)
     }
     this.aniListCache.set(key, { at: Date.now(), state })
     return state
@@ -298,7 +303,7 @@ export class InfoService {
       type: (subject.platform || this.platformOf(subject.type)).toUpperCase(),
       date: subject.date ?? null,
       airLabel: this.airLabelOf(subject.date),
-      score: this.resolveScore(subject),
+      score: computeScore(subject.rating),
       ratingTotal: subject.rating?.total ?? null,
       scoreCount: subject.rating?.count ?? null,
       tags: this.pickTags(subject),
@@ -306,7 +311,7 @@ export class InfoService {
       airedEpisodes,
       endDate,
       status: this.resolveStatus(subject, airedEpisodes, totalEpisodes, endDate, state),
-      nextEpisode: this.resolveNext(state, subject.date),
+      nextEpisode: this.resolveNext(state),
       episodeDates,
       subscribed,
     }
@@ -337,33 +342,14 @@ export class InfoService {
   /** 已播出话数：播出日不晚于今天的最后一集 */
   private countAired(dates: (string | null)[]): number | null {
     if (!dates.length) return null
-    const today = new Date().toISOString().slice(0, 10)
+    // 必须按配置时区取「今天」：`toISOString()` 给的是 UTC 日期，
+    // 在 UTC+8 的 00:00–08:00 会比本地早一天，导致今天播出的那集不算已播
+    const date = today(this.timeZone)
     let aired = 0
-    for (const date of dates) {
-      if (date && date <= today) aired++
+    for (const value of dates) {
+      if (value && value <= date) aired++
     }
     return aired
-  }
-
-  /**
-   * 评分：与推送表同一套算法（由 `rating.count` 算算术平均，两位小数）。这里复算而不是共用
-   * `computeScore`，是因为那个函数在 `localizer.ts` 里是私有的，逻辑只有几行。
-   */
-  private resolveScore(subject: BgmSubject): number | null {
-    const count = subject.rating?.count
-    if (count) {
-      let sum = 0
-      let votes = 0
-      for (const [key, value] of Object.entries(count)) {
-        const score = Number(key)
-        const people = Number(value)
-        if (!Number.isFinite(score) || !Number.isFinite(people) || people <= 0) continue
-        sum += score * people
-        votes += people
-      }
-      if (votes > 0) return Math.round((sum / votes) * 100) / 100
-    }
-    return typeof subject.rating?.score === 'number' ? subject.rating.score : null
   }
 
   /**
@@ -382,16 +368,16 @@ export class InfoService {
     if (state?.status === 'NOT_YET_RELEASED') return 'upcoming'
 
     const first = subject.date ?? null
-    const today = new Date().toISOString().slice(0, 10)
-    if (first && first > today) return 'upcoming'
-    if (endDate && endDate < today) return 'finished'
+    const date = today(this.timeZone)
+    if (first && first > date) return 'upcoming'
+    if (endDate && endDate < date) return 'finished'
     if (total !== null && aired !== null && aired >= total) return 'finished'
-    if (first && first <= today) return 'airing'
+    if (first && first <= date) return 'airing'
     return 'unknown'
   }
 
   /** 下一话：AniList 给的是 epoch 秒，转成本地时区的文案 */
-  private resolveNext(state: AniListState | null, fallbackDate?: string): SubjectInfo['nextEpisode'] {
+  private resolveNext(state: AniListState | null): SubjectInfo['nextEpisode'] {
     const next = state?.nextAiringEpisode
     if (typeof next?.airingAt === 'number' && typeof next.episode === 'number') {
       const ms = next.airingAt * 1000

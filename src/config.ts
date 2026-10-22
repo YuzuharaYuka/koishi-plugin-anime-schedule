@@ -7,6 +7,7 @@ import {
   DAILY_OFFSET_MAX,
   DAILY_OFFSET_MIN,
   DEFAULT_SUPERSAMPLE,
+  LOCALIZE_TIMEOUT_SECONDS,
   MAX_SUPERSAMPLE,
 } from './constants'
 import type { DigestFormat, ImageLayout, PluginLocale, TimeZone, TitleStyle } from './types'
@@ -252,7 +253,7 @@ export const Config: Schema<Config> = Schema.intersect([
       requestTimeout: Schema.number()
         .min(1)
         .description('单次请求超时（秒）')
-        .default(20),
+        .default(LOCALIZE_TIMEOUT_SECONDS),
       retries: Schema.number()
         .min(0)
         .description('请求失败重试次数')
@@ -328,7 +329,7 @@ export function normalizeConfig(config: Config): Config {
     },
     advanced: {
       ...config.advanced,
-      requestTimeout: int(config.advanced?.requestTimeout, 20, 1),
+      requestTimeout: int(config.advanced?.requestTimeout, LOCALIZE_TIMEOUT_SECONDS, 1),
       retries: int(config.advanced?.retries, 2),
     },
   }

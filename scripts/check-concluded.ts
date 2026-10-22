@@ -9,6 +9,7 @@
  * 用法（先 `cd external/anime-schedule`）: npx tsx scripts/check-concluded.ts
  */
 import { Logger } from 'koishi'
+import { HttpClient } from '../src/services/network'
 import { createContext } from './context'
 import { Config as ConfigSchema, normalizeConfig, type Config } from '../src/config'
 import { BangumiDataIndex } from '../src/data/bangumi-data'
@@ -41,9 +42,11 @@ async function main(): Promise<void> {
   const config = normalizeConfig({ ...base, timeZone: 'Asia/Shanghai' })
   const logger = new Logger('check')
 
-  const index = new BangumiDataIndex(ctx, logger)
-  const airing = new AiringStatusService(ctx, logger)
-  const digest: any = new DigestService(ctx, config, logger, index, airing)
+  const http = new HttpClient(ctx, logger)
+
+  const index = new BangumiDataIndex(ctx, logger, http)
+  const airing = new AiringStatusService(ctx, logger, http)
+  const digest: any = new DigestService(ctx, config, logger, index, http, airing)
   await index.load()
 
   const date = today(digest.timeZone)

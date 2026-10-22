@@ -9,10 +9,17 @@ import type {
   DigestKind,
   LocalizeCacheEntry,
 } from '../types'
-import { LATE_NIGHT_END_HOUR, MIN_SCORE_VOTES, getMessages } from '../constants'
+import {
+  DAILY_OFFSET_MAX,
+  DAILY_OFFSET_MIN,
+  LATE_NIGHT_END_HOUR,
+  MIN_SCORE_VOTES,
+  getMessages,
+} from '../constants'
 import type { AiringState, ScheduledEpisode } from '../types'
 import type { AiringStatusService } from './airing'
 import { Localizer } from './localizer'
+import type { HttpClient } from './network'
 import { BangumiDataIndex, type AirCandidate, type IndexEntry } from '../data/bangumi-data'
 import {
   SEASON_NAMES,
@@ -105,10 +112,11 @@ export class DigestService {
     private config: Config,
     logger: Logger,
     readonly index: BangumiDataIndex,
+    http: HttpClient,
     /** AniList 播出状态查询；未注入时退化为「按 Bangumi 逐集档期判断」 */
     private airing?: AiringStatusService,
   ) {
-    this.localizer = new Localizer(ctx, config, logger)
+    this.localizer = new Localizer(ctx, config, logger, http)
   }
 
   get timeZone(): string {
@@ -436,40 +444,67 @@ export class DigestService {
     let dropped = 0
     const kept = candidates.filter((candidate) => {
       const state = candidate.entry.aniListId === null ? undefined : airing.get(candidate.entry.aniListId)
-      if (!state || !this.isSameAniListSeason(state, candidate.entry.broadcastMs)) return true
-
-      if (state.status === 'RELEASING' || state.status === 'NOT_YET_RELEASED') return true
-      // 还有没播的集，说明仍在播（例如同季条目仍在追番进度）
-      if (state.nextEpisode && state.nextEpisode.atMs > now) return true
-
-      // 判据一：集数够到，且最终回的播出时刻确实已经过去。只看集数会在最终回当天就提前
-      // 剔除（AniList 把当天的集也算作已播），因此还要比较 `lastAiredMs <= now`。
-      if (state.episodes !== null && state.airedEpisodes !== null) {
-        if (state.airedEpisodes >= state.episodes && state.lastAiredMs !== null && state.lastAiredMs <= now) {
-          debugLog('[digest] 剔除 %s：AniList 已播 %d / %d 集，最终回 %s 已过', candidate.entry.title, state.airedEpisodes, state.episodes, new Date(state.lastAiredMs).toISOString().slice(0, 16))
-          dropped++
-          return false
-        }
-        return true
-      }
-
-      // 判据二：没有集数时退回终映日
-      if (state.endDate) {
-        const endMs = Date.parse(`${state.endDate}T00:00:00Z`)
-        if (candidate.atMs - endMs <= FINAL_EPISODE_DAY_GRACE * 86400000) return true
-        debugLog('[digest] 剔除 %s：AniList 状态 %s，终映 %s（共 %s 集）', candidate.entry.title, state.status, state.endDate, state.episodes ?? '?')
-        dropped++
-        return false
-      }
-      return true
+      // 以「这一场的播出时刻」为准。无法判定（不是同季、终映日异常）时一律保留：
+      // 表格里多留一部只是不好看，误删一部会让用户以为没更新。
+      const finished = this.aniListFinished(state, candidate.entry.broadcastMs, now, candidate.atMs)
+      if (finished !== true) return true
+      debugLog(
+        '[digest] 剔除 %s：AniList 状态 %s，已播 %s / %s 集，终映 %s',
+        candidate.entry.title,
+        state?.status ?? '?',
+        state?.airedEpisodes ?? '?',
+        state?.episodes ?? '?',
+        state?.endDate ?? '?',
+      )
+      dropped++
+      return false
     })
     if (dropped > 0) debugLog('[digest] 剔除已播完的作品 %d 部（AniList）', dropped)
     return kept
   }
 
   /**
+   * 根据 AniList 状态判断「已经播完」。出表闸门（`dropFinishedByAniList`）与订阅清理
+   * （`isEntryFinished`）共用这一份，避免两处判据各写一遍而漂移。
+   *
+   * 返回 `null` 表示**无法判定**：记录指的不是这一季、或字段不足以判断。退化方式交给调用方
+   * ——出表闸门保留，订阅清理退回本地 `end`。
+   *
+   * @param fromMs 以哪个时刻为准：出表闸门用该场的播出时刻，订阅清理用当前时刻。
+   */
+  private aniListFinished(
+    state: AiringState | undefined,
+    base: number | null,
+    now: number,
+    fromMs: number,
+  ): boolean | null {
+    if (!state || !this.isSameAniListSeason(state, base)) return null
+    // 还在连载或还没开播，一律不算完结
+    if (state.status === 'RELEASING' || state.status === 'NOT_YET_RELEASED') return false
+    // 还有没播的一话，说明没完结
+    if (state.nextEpisode && state.nextEpisode.atMs > now) return false
+
+    // 话数已知：只有「话数已够」且「最终话时刻确实过去了」才算完结。只看话数会在最终话当天
+    // 就提前判完结（AniList 把当天的集也算作已播）。
+    if (state.episodes !== null && state.airedEpisodes !== null) {
+      return state.airedEpisodes >= state.episodes
+        && state.lastAiredMs !== null
+        && state.lastAiredMs <= now
+    }
+
+    // 话数未知时退回终映日。终映日缺失或格式异常时不敢判完结，交回调用方。
+    if (state.endDate) {
+      const endMs = Date.parse(`${state.endDate}T00:00:00Z`)
+      if (!Number.isFinite(endMs)) return null
+      return fromMs > endMs + FINAL_EPISODE_DAY_GRACE * 86400000
+    }
+
+    return null
+  }
+
+  /**
    * 这条 AniList 记录与 `base` 是不是同一季。**只用于「是否已播完」，不用于排期**（`status`
-   * 一旦采信就会把作品从各表里剔除）。取逐話時刻时故意不做这个校验，见 `applyAiringSchedule`。
+   * 一旦采信就会把作品从各表里剔除）。取逐話时刻时故意不做这个校验，见 `applyAiringSchedule`。
    */
   private isSameAniListSeason(state: AiringState, base: number | null): boolean {
     // 没有首播日期时无法校验，采信 AniList 的状态（该字段可靠性高）
@@ -712,8 +747,7 @@ export class DigestService {
     const titleOriginal = style === 'both' && hasOriginal ? original : ''
     const name = !localized || style === 'original'
       ? original
-      : style === 'localized' ? localized
-        : titleOriginal ? localized : localized
+      : style === 'localized' ? localized : localized
 
     // 样本太少时评分没有参考价值：新番刚开播可能只有一两个人投票，那个数字会随样本增加
     // 剧烈变化。留空优于给出误导性的数字。
@@ -976,7 +1010,8 @@ export class DigestService {
     subscribed: Set<string> = EMPTY_SETS,
     now = Date.now(),
   ): Promise<Digest> {
-    const days = clamp(offset, -32, 32)
+    // 与配置项 `.min()/.max()` 共用同一对边界，避免「配置页能填、这里又被夹一次」
+    const days = clamp(offset, DAILY_OFFSET_MIN, DAILY_OFFSET_MAX)
     return this.buildAirings('daily', subscribed, now, (at) => {
       const startMs = getDayStartMs(addDays(today(this.timeZone, at), days, this.timeZone), this.timeZone)
       return { fromMs: startMs, toMs: startMs + 86400000 - 1, now: startMs }
@@ -1397,9 +1432,11 @@ export class DigestService {
   }
 
   /**
-   * 这部作品是否已经播完。**必须与展示逻辑同源**，否则会把在播的作品清掉：
-   * 1. **先做同季校验**——长期番的记录会挂在较早的一季上，那条 `FINISHED` 说的是别的内容；
-   * 2. **最终话当天不算播完**——AniList 当天就置 `FINISHED`，而那一话要到晚上才播。
+   * 这部作品是否已经播完。判据与出表闸门共用 `aniListFinished`，只在退化方式上不同：
+   * 无法判定时退回本地 `end`（含一个周期的余量）。
+   *
+   * 比出表闸门多留一天（`fromMs = now - 86400000`）：AniList 在最终话当天就置 `FINISHED`，
+   * 而那一话要到晚上才播，当天就停用订阅会让用户以为漏了最后一集。
    */
   private isEntryFinished(
     entry: IndexEntry,
@@ -1407,25 +1444,8 @@ export class DigestService {
     now: number,
   ): boolean {
     const state = entry.aniListId === null ? undefined : states.get(entry.aniListId)
-    if (state && this.isSameAniListSeason(state, entry.broadcastMs)) {
-      // 还在连载或还没开播，一律保留
-      if (state.status === 'RELEASING' || state.status === 'NOT_YET_RELEASED') return false
-      // 还有没播的一话，说明没完结
-      if (state.nextEpisode && state.nextEpisode.atMs > now) return false
-
-      if (state.episodes !== null && state.airedEpisodes !== null) {
-        // 只有「话数已够」且「最终话时刻确实过去了」才算完结
-        return state.airedEpisodes >= state.episodes
-          && state.lastAiredMs !== null
-          && state.lastAiredMs <= now
-      }
-      // 没有话数时退回终映日；取不到就不敢清
-      if (state.endDate) {
-        const endMs = Date.parse(`${state.endDate}T00:00:00Z`)
-        return Number.isFinite(endMs) && now > endMs + 86400000
-      }
-      return false
-    }
+    const finished = this.aniListFinished(state, entry.broadcastMs, now, now - 86400000)
+    if (finished !== null) return finished
     // AniList 没有该条目、或记录指的不是这一季时，退回本地 `end`（含一个周期的余量）
     return this.hasEnded(entry, now)
   }

@@ -17,6 +17,14 @@ import { HttpClient } from '../services/network'
 /** 等待一张封面解码完成的最长时间 */
 const DECODE_WAIT_MS = 5000
 
+/**
+ * 单张封面的总时间预算（含多候选地址）。
+ *
+ * 未命中缓存的封面要按候选地址逐个试，每个都等满 8s 的话，一张图就能拖住整批；
+ * 封面缺失只是退化成占位块，不值得为它耗更多时间。
+ */
+const COVER_TOTAL_BUDGET_MS = 12000
+
 /** 同一张封面的备用地址：Bangumi 图床按尺寸分目录（`/pic/cover/l|c|m|s/`），个别条目会缺某个尺寸，需逐个回退 */
 function coverUrlCandidates(url: string): string[] {
   const matched = /^(https?:\/\/[^/]+\/pic\/cover\/)([a-z]+)(\/.*)$/i.exec(url)
@@ -86,7 +94,7 @@ export class CoverStore {
   private cacheDisabled = false
 
   constructor(
-    private ctx: Context,
+    ctx: Context,
     private logger: Logger,
     private concurrency: number,
     private cacheDays: number,
@@ -121,11 +129,15 @@ export class CoverStore {
     const started = Date.now()
     let downloaded = 0
     let fromDisk = 0
+    let fromMemory = 0
     const entries = await mapLimit(urls, this.concurrency, async (url) => {
+      // 内存命中多半来自「取详情时的预热」；磁盘命中说明缓存生效；两者都不是才是真下载。
+      // 三个数分开统计，才能从日志判断预热有没有起作用。
       const hadMemory = this.memory.has(url)
       const canvas = await this.loadOne(url)
       if (canvas) {
-        if (hadMemory) fromDisk++
+        if (hadMemory) fromMemory++
+        else if (await this.isOnDisk(url)) fromDisk++
         else downloaded++
       }
       return { url, canvas }
@@ -136,9 +148,10 @@ export class CoverStore {
     // 封面缺失会影响版面，失败比例高时给出 info 提示便于定位
     if (ok < urls.length) {
       this.logger.info(
-        '[render] 封面 %d/%d 张可用（内存或磁盘命中 %d，新下载 %d，失败 %d）',
+        '[render] 封面 %d/%d 张可用（预热命中 %d，磁盘命中 %d，新下载 %d，失败 %d）',
         ok,
         urls.length,
+        fromMemory,
         fromDisk,
         downloaded,
         urls.length - ok,
@@ -176,9 +189,16 @@ export class CoverStore {
       await fs.rm(this.filePath(url), { force: true }).catch(() => undefined)
     }
 
-    // 逐个候选地址尝试：图床偶尔缺某个尺寸的图，只试一个地址整张封面就变成占位块了
+    // 逐个候选地址尝试：图床偶尔缺某个尺寸的图，只试一个地址整张封面就变成占位块了。
+    // 总耗时受 `COVER_TOTAL_BUDGET_MS` 约束，避免多个候选叠加成十几秒。
+    const deadline = Date.now() + COVER_TOTAL_BUDGET_MS
     for (const candidate of coverUrlCandidates(url)) {
-      const buffer = await this.download(candidate)
+      const remaining = deadline - Date.now()
+      if (remaining <= 0) {
+        this.logger.debug('[render] 封面超出时间预算，使用占位块: %s', url)
+        break
+      }
+      const buffer = await this.download(candidate, Math.min(COVER_TIMEOUT_MS, remaining))
       if (!buffer) continue
       const canvas = await decodeToCanvas(buffer)
       if (!canvas) {
@@ -194,11 +214,13 @@ export class CoverStore {
     return null
   }
 
-  private async download(url: string): Promise<Buffer | null> {
+  private async download(url: string, timeout = COVER_TIMEOUT_MS): Promise<Buffer | null> {
     try {
       const buffer = toBuffer(await this.http.get<unknown>(url, {
-        timeout: COVER_TIMEOUT_MS,
+        timeout,
         responseType: 'arraybuffer',
+        // 封面已有候选地址回退，重试同一地址只会把单次超时叠成数倍
+        retries: 0,
       }))
       if (!buffer) {
         this.logger.debug('[render] 封面响应不是二进制数据，使用占位块: %s', url)
@@ -221,6 +243,17 @@ export class CoverStore {
   private filePath(url: string): string {
     const hash = createHash('sha1').update(url).digest('hex')
     return resolve(this.cacheRoot, hash.slice(0, 2), `${hash}.img`)
+  }
+
+  /** 该封面是否命中磁盘缓存（仅用于统计，不参与加载流程） */
+  private async isOnDisk(url: string): Promise<boolean> {
+    if (!this.enabled) return false
+    try {
+      await fs.access(this.filePath(url))
+      return true
+    } catch {
+      return false
+    }
   }
 
   private async readDiskCache(url: string): Promise<Buffer | null> {

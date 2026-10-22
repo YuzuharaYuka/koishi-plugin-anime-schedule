@@ -26,6 +26,13 @@ export const ANILIST_BATCH_SIZE = 50
 export const ANILIST_MIN_INTERVAL_MS = 1200
 
 /**
+ * 收到 429 / 403 后的冷却时长。
+ *
+ * 429 是超限封禁、403 是 API 被临时停用，两种情况都沿用已有数据一段时间再试。
+ */
+export const ANILIST_COOLDOWN_MS = 5 * 60 * 1000
+
+/**
  * bangumi-data 索引。
  *
  * 数据默认来自 npm 依赖包 `bangumi-data`（`main` 指向 `dist/data.json`），
@@ -117,10 +124,19 @@ export const EPISODE_QUERY_LIMIT = 100
 
 /**
  * 并发检索 Bangumi 的条数上限。
- * Bangumi 没有公开的严格限流，但一次本季表可能有上百部作品，
- * 4 路并发已能把原本串行的等待时间压到 1/4，同时不至于触发风控。
+ *
+ * Bangumi 没有公开的严格限流，但一次本季表可能有上百部作品。取 6 路：实测 4 路时周表
+ * 取详情要 50 秒上下，6 路约省三分之一，仍远低于会让站点限流的密度。
  */
-export const LOCALIZE_CONCURRENCY = 4
+export const LOCALIZE_CONCURRENCY = 6
+
+/**
+ * 单次元数据请求的超时（秒），`advanced.requestTimeout` 的默认值。
+ *
+ * Bangumi 的条目接口是小体积 JSON，正常几百毫秒返回。等满 20 秒基本等价于连接已死，
+ * 而一条超时会把整次构建拖住这么久，所以默认压到 10 秒；嫌紧可以自行调大。
+ */
+export const LOCALIZE_TIMEOUT_SECONDS = 10
 
 /** 并发拉取封面时的并发上限 */
 export const COVER_CONCURRENCY = 8
@@ -152,21 +168,6 @@ export const FONT_CANDIDATES: string[] = [
 ]
 
 /** 加粗字体候选，找不到时由绘制层用描边模拟粗体 */
-/**
- * 兜底字体族候选。
- *
- * 与 `FONT_CANDIDATES` 的区别：那些是**主字体**（选一个用），这些是**补充**
- * （全部注册，缺字形时按顺序回退）。`@napi-rs/canvas` 只在"字体族不存在"时回退，
- * 族存在但缺字形就直接画豆腐块，所以补充族必须真的注册进来才有效。
- * 名字要与 `render/fonts.ts` 的 `FALLBACK_FAMILIES` 一致。
- */
-export const FALLBACK_FONT_CANDIDATES: string[] = [
-  'C:/Windows/Fonts/YuGothR.ttc',
-  'C:/Windows/Fonts/msgothic.ttc',
-  'C:/Windows/Fonts/simsun.ttc',
-  'C:/Windows/Fonts/NotoSansSC-VF.ttf',
-]
-
 export const BOLD_FONT_CANDIDATES: string[] = [
   'C:/Windows/Fonts/msyhbd.ttc',
   'C:/Windows/Fonts/Dengb.ttf',
@@ -391,12 +392,8 @@ export interface Messages {
   footer: string
   /** 周历表表头的日期区间，例如 `9月21日 - 9月27日`；两端已由 formatDayLabel 本地化 */
   rangeLabel: (start: string, end: string) => string
-  /** 今天的日期列角标 */
-  todayBadge: string
   /** 已在订阅列表里的作品，条目上的气泡 */
   subscribedBadge: string
-  /** 日期列超出上限时的提示 */
-  moreItems: (count: number) => string
 
   // ── 作品详情卡（`anime.info`）──
   /** 详情卡页脚的数据更新时间 */
@@ -449,9 +446,7 @@ const ZH_CN: Messages = {
   truncated: (shown, total) => `仅显示前 ${shown} 部，其余 ${total - shown} 部请使用指令按需查询。`,
   footer: '数据来源: bangumi-data / Bangumi',
   rangeLabel: (start, end) => `${start} - ${end}`,
-  todayBadge: '今天',
   subscribedBadge: '已订阅',
-  moreItems: (count) => `还有 ${count} 部`,
 
   infoUpdated: (moment) => `数据更新于 ${moment}`,
   infoAiring: '连载中',
@@ -496,9 +491,7 @@ const JA_JP: Messages = {
   truncated: (shown, total) => `先頭 ${shown} 作品のみ表示しています (残り ${total - shown} 作品)。`,
   footer: 'データ提供: bangumi-data / Bangumi',
   rangeLabel: (start, end) => `${start} 〜 ${end}`,
-  todayBadge: '今日',
   subscribedBadge: '登録済み',
-  moreItems: (count) => `他 ${count} 作品`,
 
   infoUpdated: (moment) => `データ更新 ${moment}`,
   infoAiring: '放送中',
@@ -543,9 +536,7 @@ const EN_US: Messages = {
   truncated: (shown, total) => `Showing first ${shown} of ${total} titles.`,
   footer: 'Data: bangumi-data / Bangumi',
   rangeLabel: (start, end) => `${start} - ${end}`,
-  todayBadge: 'Today',
   subscribedBadge: 'Subscribed',
-  moreItems: (count) => `+${count} more`,
 
   infoUpdated: (moment) => `Updated ${moment}`,
   infoAiring: 'Airing',

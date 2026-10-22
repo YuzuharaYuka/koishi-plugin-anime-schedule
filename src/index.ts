@@ -121,10 +121,10 @@ export function apply(ctx: Context, rawConfig: Config) {
   // 出网客户端：Bangumi 接口与图床在国内无法直连，代理在这里统一生效
   const http = new HttpClient(ctx, logger, config.advanced.retries)
   // bangumi-data 索引层：作品清单、中文译名、Bangumi 条目 ID 与周期时刻都来自这里
-  const index = new BangumiDataIndex(ctx, logger)
+  const index = new BangumiDataIndex(ctx, logger, http)
   // AniList 播出状态：判断「这部番是否还在播」的权威依据
-  const airing = new AiringStatusService(ctx, logger)
-  const digest = new DigestService(ctx, config, logger, index, airing)
+  const airing = new AiringStatusService(ctx, logger, http)
+  const digest = new DigestService(ctx, config, logger, index, http, airing)
   const renderer = new Renderer(ctx, config, logger, http)
   const guard = new DispatchGuard(ctx, logger)
   // 单部作品详情：只服务 `anime.info` 的交互查询，不参与推送

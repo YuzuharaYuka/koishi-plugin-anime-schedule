@@ -5,6 +5,7 @@
  */
 import type { Context, Logger } from 'koishi'
 import { ANILIST_ID_MAP } from '../schedule/anilist-ids'
+import type { HttpClient } from '../services/network'
 import { debugLog } from '../utils'
 import { foldTitle } from '../utils/fold'
 import type { BangumiDataItem, BroadcastSource } from './bangumi-data-source'
@@ -81,8 +82,8 @@ export class BangumiDataIndex {
   /** 补充映射命中的条数，用于日志 */
   private mappedCount = 0
 
-  constructor(ctx: Context, private logger: Logger) {
-    this.loader = new BangumiDataLoader(ctx, logger)
+  constructor(ctx: Context, private logger: Logger, http: HttpClient) {
+    this.loader = new BangumiDataLoader(ctx, logger, http)
   }
 
   get ready(): boolean {
@@ -354,5 +355,3 @@ export class BangumiDataIndex {
     if (mapped > 0) debugLog('[index] AniList ID 补充映射命中 %d 部', mapped)
   }
 }
-
-export type { BangumiDataItem } from './bangumi-data-source'

@@ -8,7 +8,7 @@
  */
 import type { Context, Logger } from 'koishi'
 import { buildUserAgent } from '../constants'
-import { debugLog, errorMessage, errorStatus, retryDelay } from '../utils'
+import { debugLog, errorMessage, errorStatus, isTimeoutError, retryDelay } from '../utils'
 
 /** 这个错误是否值得重试：429、5xx 与网络层错误可以，其余 4xx 立即失败 */
 function isRetriable(error: unknown): boolean {
@@ -40,6 +40,13 @@ export interface RequestOptions {
   body?: unknown
   /** 响应类型：`json`（默认）/ `text` / `arraybuffer` */
   responseType?: 'json' | 'text' | 'arraybuffer'
+  /**
+   * 本请求的重试次数，覆盖 `advanced.retries`。
+   *
+   * 封面这类「失败一张也能出图」的请求传 `0`：它们已有候选 URL 回退，
+   * 重试同一个地址只会把 8s 超时叠成 26s。
+   */
+  retries?: number
 }
 
 /**
@@ -71,19 +78,34 @@ export class HttpClient {
   }
 
   /**
-   * 请求失败时给出可操作的提示，只提示一次（网络不通会让每个条目都失败，逐条刷日志没有意义）。
-   * **收到 HTTP 响应就不提示**：404、429、5xx 都说明链路是通的，提示只会误导排查方向。
+   * 请求失败时给出排查方向，只提示一次（大量条目同时失败时逐条刷日志没有意义）。
+   *
+   * 按**实际错误类型**分三类，而不是笼统归结为「没装代理」：
+   *
+   * - 收到 HTTP 响应：链路是通的，不提示；
+   * - 超时：链路通但太慢，指向超时配置；
+   * - 连接/DNS 失败：才怀疑链路与代理。
    */
   hintOnFailure(error: unknown): void {
     if (this.hintsGiven > 0) return
     if (hasHttpResponse(error)) return
-    if (!this.withoutAnyProxy) return
     this.hintsGiven++
+    const detail = errorMessage(error)
+    if (isTimeoutError(error, undefined, detail)) {
+      this.logger.warn(
+        '[network] 出网请求超时（%s）。浏览器能打开不代表 Node 侧能及时完成：'
+        + '浏览器有更长的超时与 IPv4/IPv6 竞速回退。可调大「单次请求超时」，或启用 '
+        + '`@koishijs/plugin-proxy-agent` 走代理。',
+        detail,
+      )
+      return
+    }
+    if (!this.withoutAnyProxy) return
     this.logger.warn(
-      '[network] 出网请求失败（%s）。Bangumi 接口与图床（lain.bgm.tv）在中国大陆无法直连，'
-      + '请安装并启用 `@koishijs/plugin-proxy-agent`，在它的配置里填写代理地址'
-      + '（如 `http://127.0.0.1:7890` 或 `socks5h://127.0.0.1:1080`）。',
-      errorMessage(error),
+      '[network] 出网请求失败（%s）。Bangumi 接口与图床（lain.bgm.tv）在中国大陆通常无法直连；'
+      + '若已在浏览器中确认可达，则多为 DNS/IPv6 或连接被重置，可启用 '
+      + '`@koishijs/plugin-proxy-agent` 并填写代理地址（如 `http://127.0.0.1:7890` 或 `socks5h://127.0.0.1:1080`）。',
+      detail,
     )
   }
 
@@ -125,7 +147,7 @@ export class HttpClient {
       headers: { 'User-Agent': this.userAgent, Accept: 'application/json', ...options.headers },
       responseType: options.responseType,
     }
-    const maxAttempt = Math.max(0, this.retries)
+    const maxAttempt = Math.max(0, options.retries ?? this.retries)
     for (let attempt = 0; ; attempt++) {
       try {
         // 用 `ctx.http(method, url, config)` 这个统一入口，返回的是带 `data` 的响应对象；

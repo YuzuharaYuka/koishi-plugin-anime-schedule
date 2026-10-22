@@ -381,7 +381,6 @@ async function sendInfoDetail(deps: HandlerContext, session: Session, bgmId: num
 
 /** 出图，失败时退回文本；两者都不可用时返回 `null` */
 async function renderInfoNode(deps: HandlerContext, detail: SubjectInfo): Promise<h | null> {
-  if (!detail) return null
   if (deps.config.output.format !== 'image') return h.text(renderInfoText(detail, deps.config))
   try {
     const buffer = await deps.renderer.renderInfo(detail)
