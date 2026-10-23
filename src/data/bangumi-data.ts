@@ -78,6 +78,8 @@ export class BangumiDataIndex {
   private sourceLabel = ''
   private loaded = false
   private loadPromise: Promise<void> | null = null
+  /** 检索用的折叠名缓存，见 `searchables()` */
+  private searchable: { entry: IndexEntry; names: string[] }[] | null = null
   private readonly loader: BangumiDataLoader
   /** 补充映射命中的条数，用于日志 */
   private mappedCount = 0
@@ -133,7 +135,7 @@ export class BangumiDataIndex {
       const withBroadcast = this.entries.filter((entry) => entry.broadcastMs !== null).length
       const withId = this.entries.filter((entry) => entry.bangumiId !== null).length
       const translated = this.entries.filter((entry) => entry.zhHans).length
-      this.logger.info('[index] bangumi-data 已载入 %d 部作品 (来源: %s)', this.entries.length, this.sourceLabel)
+      this.logger.info('[index] bangumi-data 已载入 %d 部作品（来源: %s）', this.entries.length, this.sourceLabel)
       debugLog(
         '[index] 载入耗时 %dms | 带周期时刻 %d | 带 Bangumi 条目 ID %d | 带简中译名 %d',
         Date.now() - started,
@@ -157,11 +159,10 @@ export class BangumiDataIndex {
    * 9 月 26 日首播的 10 月番因此留在 10 月季。
    */
   seasonWindow(year: number, month: number): { startMs: number; endMs: number } {
-    // 起点在上一个月的 20 日之后：1 月季从去年 12/21 开始
-    const startMs = month === 1 ? Date.UTC(year - 1, 11, 21) : Date.UTC(year, month - 2, 21)
-    // 终点在本季末月的 20 日之后。注意 `Date.UTC` 的月份下标比自然月小 1：
-    // 起始月 M 的末月是 M+2，对应下标 M+1（10 月季用 11 表示 12 月）
-    const endMs = month === 10 ? Date.UTC(year, 11, 21) : Date.UTC(year, month + 1, 21)
+    // `Date.UTC` 的月份允许越界并自动换算：1 月季的 `month - 2 = -1` 就是上一年的 12 月，
+    // 10 月季的 `month + 1 = 11` 就是 12 月。因此首尾两端都不需要单独判断月份
+    const startMs = Date.UTC(year, month - 2, 21)
+    const endMs = Date.UTC(year, month + 1, 21)
     return { startMs, endMs }
   }
 
@@ -176,7 +177,7 @@ export class BangumiDataIndex {
       return entry.beginMs >= startMs && entry.beginMs < endMs
     })
     debugLog(
-      '[index] 季度 %d-%d: %d 部 (仅 TV / WEB，首播 %s ~ %s)',
+      '[index] 季度 %d-%d: %d 部（仅 TV / WEB，首播 %s ~ %s）',
       year,
       month,
       list.length,
@@ -239,12 +240,11 @@ export class BangumiDataIndex {
   }
 
   /**
-   * 按关键词检索索引层。打分规则（高到低）：完整标题完全相等（折叠后）→ 标题以关键词开头 →
-   * 标题包含关键词 → 关键词的每个字符都按顺序出现在标题里（子序列，用于容忍译名与原文的
-   * 字序差异）。除完全相等外，越短的标题得分越高。
-   */
-  /**
-   * 按标题检索，按相关度降序返回。
+   * 按关键词检索索引层。
+   *
+   * 打分规则（高到低）：完整标题完全相等（折叠后）→ 标题以关键词开头 → 标题包含关键词 →
+   * 关键词的每个字符都按顺序出现在标题里（子序列，用于容忍译名与原文的字序差异）。
+   * 除完全相等外，越短的标题得分越高。
    *
    * @param limit 返回条数上限，`<= 0` 表示不限制
    */
@@ -254,11 +254,9 @@ export class BangumiDataIndex {
     const chars = [...folded]
 
     const scored: { entry: IndexEntry; score: number }[] = []
-    for (const entry of this.entries) {
+    for (const { entry, names } of this.searchables()) {
       let best = 0
-      for (const name of this.namesOf(entry)) {
-        const value = foldTitle(name)
-        if (!value) continue
+      for (const value of names) {
         let score = 0
         if (value === folded) score = 1000
         else if (value.startsWith(folded)) score = 800
@@ -281,9 +279,27 @@ export class BangumiDataIndex {
     return [entry.title, entry.zhHans, entry.zhHant, entry.en].filter(Boolean)
   }
 
+  /**
+   * 检索用的「折叠名」列表，首次检索时构建一次。
+   *
+   * `foldTitle` 要做字符映射、NFKC、大小写与两条 Unicode 正则，八个字的名字约 10µs；
+   * 全库两万多个名字每个字都重算一遍是 130ms 级——而索引在进程内不变，折叠结果也不变。
+   */
+  private searchables(): { entry: IndexEntry; names: string[] }[] {
+    if (!this.searchable) {
+      this.searchable = this.entries.map((entry) => ({
+        entry,
+        names: this.namesOf(entry).map(foldTitle).filter(Boolean),
+      }))
+    }
+    return this.searchable
+  }
+
   /** 把原始清单展开成索引条目 */
   private apply(items: BangumiDataItem[], source: string): void {
     this.sourceLabel = source
+    // 条目换了，折叠名缓存必须作废
+    this.searchable = null
     const entries: IndexEntry[] = []
     const sourceCount = { top: 0, site: 0, none: 0 }
     let recurringCount = 0

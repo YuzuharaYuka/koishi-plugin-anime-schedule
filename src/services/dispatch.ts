@@ -1,6 +1,6 @@
 import type { Bot, Context, Logger } from 'koishi'
 import { h } from 'koishi'
-import { LOG_MESSAGES, RESPONSES } from '../constants'
+import { LOG_MESSAGES } from '../constants'
 import type { Config } from '../config'
 import type { AnimeChannel, Digest, DigestKind } from '../types'
 import { buildForward, renderText } from '../render/text'
@@ -85,7 +85,9 @@ export class DispatchGuard {
       }], ['platform', 'channelId', 'digestKind', 'dedupeKey'])
       return true
     } catch (error) {
-      this.logger.debug('[dispatch] 写入去重记录失败，本次按未发送处理: %s', errorMessage(error))
+      // 调用方把 `false` 当作「别人已经发过」直接跳过，因此写库失败必须能用日志看见，
+      // 否则数据库故障期间整批推送会静默消失
+      this.logger.warn('[dispatch] 写入去重记录失败，本次按未发送处理: %s', errorMessage(error))
       return false
     }
   }
@@ -129,7 +131,7 @@ export class Dispatcher {
         await this.send(channel, h.image(buffer, 'image/jpeg'), bot)
         return
       } catch (error) {
-        this.logger.warn('[dispatch] %s %s', RESPONSES.renderFailed, errorMessage(error))
+        this.logger.warn('[dispatch] 出图失败，改用文本发送: %s', errorMessage(error))
       }
     }
     const content = await sendTextDigest(bot, channel.guildId, this.config, digest)
@@ -155,7 +157,7 @@ export class Dispatcher {
         )
       }
     } else {
-      this.logger.debug('[dispatch] 找不到受理机器人 (%s)，改用广播发送', channel.botId)
+      this.logger.debug('[dispatch] 找不到受理机器人（%s），改用广播发送', channel.botId)
     }
     await this.ctx.broadcast(scope, content)
   }

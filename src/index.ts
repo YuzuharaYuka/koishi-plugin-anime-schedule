@@ -8,7 +8,7 @@ import { HttpClient } from './services/network'
 import { DigestService } from './services/digest'
 import { Dispatcher, DispatchGuard } from './services/dispatch'
 import { Scheduler } from './services/scheduler'
-import { Renderer } from './render/image'
+import { Renderer, toRenderPayload } from './render/image'
 import {
   commandNext,
   commandInfo,
@@ -114,9 +114,7 @@ export function apply(ctx: Context, rawConfig: Config) {
 
   // 调试日志开关：打开后输出 API 请求、索引命中与条目匹配细节
   setupDebug(config.advanced.debug, logger)
-  if (config.advanced.debug) {
-    logger.info('[debug] 调试日志已开启，将输出请求 URL、索引命中与条目匹配细节')
-  }
+  if (config.advanced.debug) logger.info('[lifecycle] 调试日志已开启，logger 级别已提到 debug')
 
   // 出网客户端：Bangumi 接口与图床在国内无法直连，代理在这里统一生效
   const http = new HttpClient(ctx, logger, config.advanced.retries)
@@ -141,16 +139,7 @@ export function apply(ctx: Context, rawConfig: Config) {
     ctx,
     config,
     logger,
-    (payload: Digest) => renderer.render({
-      kind: payload.kind,
-      now: payload.generatedAt,
-      header: payload.header,
-      summary: payload.summary,
-      groups: payload.groups,
-      seasonLabel: payload.seasonLabel,
-      rangeLabel: payload.rangeLabel ?? '',
-      footer: getMessages(config.locale).footer,
-    }),
+    (payload: Digest) => renderer.render(toRenderPayload(payload, getMessages(config.locale))),
   )
 
   const scheduler = new Scheduler(ctx, config, logger, digest, dispatcher, guard, async () => {
@@ -185,10 +174,9 @@ export function apply(ctx: Context, rawConfig: Config) {
         config.localize.enabled ? '开' : '关',
         index.ready ? `${index.size} 部 (${index.source})` : '不可用',
       )
-      logger.info('[lifecycle] 时间表内的时刻均按 %s 显示 (UTC%s)', config.timeZone, formatOffset(config.timeZone))
+      logger.info('[lifecycle] 时刻按 %s 显示（UTC%s）', config.timeZone, formatOffset(config.timeZone))
     } catch (error) {
-      logger.error('[lifecycle] 插件初始化失败，定时推送将不可用:', error)
-      logger.error('[lifecycle] 请检查日志并报告问题到: https://github.com/YuzuharaYuka/koishi-plugin-anime-schedule/issues')
+      logger.error('[lifecycle] 插件初始化失败，定时推送将不可用（问题反馈见 readme）。原因:', error)
     }
   })
 
@@ -257,7 +245,9 @@ function registerCommands(ctx: Context, deps: HandlerContext) {
     .example('anime.season -o 1      # 下一季')
     .action(async ({ session, options }, target) => {
       if (!session) return
-      await commandSeason(deps, session, target, options?.offset)
+      // 必须 return：参数非法时 `commandSeason` 只返回错误文案而自己不发送，
+      // 吞掉返回值就会表现成「机器人没反应」
+      return commandSeason(deps, session, target, options?.offset)
     })
 
   cmd.subcommand('.search <keyword:text>', '搜索番剧作品')

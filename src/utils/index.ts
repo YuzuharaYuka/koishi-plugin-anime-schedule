@@ -123,15 +123,23 @@ export function retryDelay(attempt: number, base = 800, cap = 8000): number {
 let debugEnabled = false
 let debugLogger: Logger | null = null
 
+/**
+ * 开启 / 关闭调试日志。
+ *
+ * 调试输出走 `logger.debug`，级别不够时会被直接丢掉，因此开启时把该 logger 的级别提到 3。
+ * 关掉时恢复默认的 2（info），避免别处仍在输出调试细节。
+ */
 export function setupDebug(enabled: boolean, logger: Logger): void {
   debugEnabled = enabled
   debugLogger = logger
+  // 只抬高、不压低：关闭时若用户自己在控制台设过更细的级别，不该被我们改掉
+  if (enabled) logger.level = 3
 }
 
 /** 打印一条调试日志；未开启调试时是空操作 */
 export function debugLog(message: string, ...args: unknown[]): void {
   if (!debugEnabled || !debugLogger) return
-  debugLogger.info(`[debug] ${message}`, ...args)
+  debugLogger.debug(message, ...args)
 }
 
 /** 把毫秒数限制在给定区间内 */

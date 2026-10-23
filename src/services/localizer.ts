@@ -276,13 +276,17 @@ export class Localizer {
 
     const missing = looked.filter((item) => !item.subject)
     debugLog(
-      '[localize] 取条目详情: 请求 %d 部，成功 %d 部，缓存命中 %d 部 (%dms)',
+      '[localize] 取详情: 请求 %d 部，成功 %d 部，缓存命中 %d 部，未取到 %d 部（%dms）',
       wanted.length,
       ok,
       result.size - ok,
+      missing.length,
       Date.now() - started,
     )
-    for (const { id } of missing) debugLog('[localize] 条目 %d 未取到详情 (可能尚未建立或接口失败)', id)
+    // 拼一行而不是逐条一行：一次构建可能缺十几部，逐条刷屏会把有用的行挤掉
+    if (missing.length) {
+      debugLog('[localize] 未取到详情的条目: %s', missing.map((item) => item.id).join(' '))
+    }
     return result
   }
 
@@ -343,10 +347,10 @@ export class Localizer {
     } catch (error) {
       const status = errorStatus(error)
       if (status === 404) {
-        debugLog('[localize] 条目 %d 在 Bangumi 上不存在 (404)', id)
+        debugLog('[localize] 条目 %d 在 Bangumi 上不存在（404）', id)
         return { value: null, notFound: true }
       }
-      if (status === 429) this.logger.debug('[localize] 条目 %d 被限流 (%s)', id, status)
+      if (status === 429) this.logger.debug('[localize] 条目 %d 被限流（%s）', id, status)
       else {
         this.logger.debug('[localize] 条目 %d 获取失败: %s', id, errorMessage(error))
         this.http.hintOnFailure(error)

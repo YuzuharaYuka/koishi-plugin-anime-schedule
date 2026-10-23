@@ -5,7 +5,7 @@ import type { Digest, DigestItem, DigestKind } from './types'
 import type { DigestService } from './services/digest'
 import { INFO_FETCH_CONCURRENCY, type InfoService, type SubjectInfo } from './services/info'
 import { sendTextDigest } from './services/dispatch'
-import type { Renderer } from './render/image'
+import { toRenderPayload, type Renderer } from './render/image'
 import { renderInfoText, renderSearchText } from './render/text'
 import { formatDate, getDayStartMs, getLocalWeekday, getSeasonStartMonth, today } from './utils/time'
 import { clamp, formatNetworkError, mapLimit, truncate } from './utils'
@@ -108,20 +108,11 @@ async function replyDigest(deps: HandlerContext, session: Session, digest: Diges
 
   if (config.output.format === 'image') {
     try {
-      const buffer = await renderer.render({
-        kind: digest.kind,
-        now: digest.generatedAt,
-        header: digest.header,
-        summary: digest.summary,
-        groups: digest.groups,
-        seasonLabel: digest.seasonLabel,
-        rangeLabel: digest.rangeLabel ?? '',
-        footer: getMessages(config.locale).footer,
-      })
+      const buffer = await renderer.render(toRenderPayload(digest, getMessages(config.locale)))
       await session.send(h.image(buffer, 'image/jpeg'))
       return
     } catch (error) {
-      logger.warn('[command] %s', RESPONSES.renderFailed, error)
+      logger.warn('[command] 出图失败，改用文本发送:', error)
     }
   }
 
@@ -172,7 +163,8 @@ export async function commandSeason(
   // 相对偏移必须用 `-o` 传：`anime.season -1` 里的 `-1` 会被 CLI 当成选项，位置参数收不到
   const parsed = parseSeasonTarget(target, digest.timeZone)
   if (parsed.error) return parsed.error
-  const offset = offsetOption ?? parsed.offset
+  // `-o` 走 Koishi 的 number 域，`1.5` 也能进来；季度偏移必须是整数，否则会算出「2.5 月新番」
+  const offset = offsetOption === undefined ? parsed.offset : Math.trunc(offsetOption)
   if (offset !== undefined && (offset > SEASON_FUTURE_LIMIT || offset < -40)) {
     return offset > 0
       ? `最多往后查 ${SEASON_FUTURE_LIMIT} 季——更远的季度还没公布。`
@@ -603,7 +595,8 @@ async function togglePush(
   if (raw && !kind) return RESPONSES.invalidKind(kindText ?? '')
 
   try {
-    // 只在首次为本群建记录时写入默认开关，避免 upsert 把已有的开关重置回默认值
+    // 首次为本群建记录时，四种推送一律先关：`anime.on weekly` 只该开本周表，
+    // 若默认给 `true`，新群里执行一次 `anime.off weekly` 反而会静默打开另外三种
     const existing = await digest.getChannel(platformOf(session), channelOf(session))
     if (!existing) {
       await digest.ensureChannel({
@@ -611,10 +604,10 @@ async function togglePush(
         channelId: channelOf(session),
         guildId: session.guildId,
         botId: session.selfId,
-        dailyEnabled: true,
-        nightEnabled: true,
-        weeklyEnabled: true,
-        seasonEnabled: true,
+        dailyEnabled: false,
+        nightEnabled: false,
+        weeklyEnabled: false,
+        seasonEnabled: false,
         enabled: true,
       })
     }
@@ -650,7 +643,7 @@ export async function commandStatus(deps: HandlerContext, session: Session): Pro
       platform: platformOf(session),
       channelId: channelOf(session),
     })
-    const date = today(digest.timeZone)
+    const dayStart = getDayStartMs(today(digest.timeZone), digest.timeZone)
     const formatText = config.output.format === 'image'
       ? `图片 (${config.output.layout === 'list' ? '卡片列表' : '时间表'})`
       : `纯文本${config.output.useForward ? ' (合并转发)' : ''}`
@@ -665,7 +658,8 @@ export async function commandStatus(deps: HandlerContext, session: Session): Pro
       `开关状态: 每日 ${channel?.dailyEnabled ? '开' : '关'} / 深夜档 ${channel?.nightEnabled ? '开' : '关'} / 本周 ${channel?.weeklyEnabled ? '开' : '关'} / 本季 ${channel?.seasonEnabled ? '开' : '关'}`,
       `订阅番剧: ${subscriptions.length} 部${config.subscription.maxPerChannel > 0 ? ` (上限 ${config.subscription.maxPerChannel})` : ''}`,
       `开播提醒: ${config.push.updateReminderEnabled ? `开，提前 ${config.push.updateLookaheadMinutes} 分钟` : '关'}`,
-      `今日推送记录: ${dispatches.filter((row) => row.digestKind !== 'sub' ? row.dedupeKey.endsWith(date) : true).length} 条`,
+      // 按记录时间统计：`sub`（开播提醒）的去重键里带的是时刻而不是日期，不能靠键判断
+      `今日推送记录: ${dispatches.filter((row) => row.dispatchedAt >= dayStart && row.dispatchedAt < dayStart + 86400000).length} 条`,
     ].join('\n')
   } catch (error) {
     deps.logger.warn('[command] 查询状态失败:', error)

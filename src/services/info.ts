@@ -11,8 +11,11 @@ import { computeScore, type Localizer } from './localizer'
 import { debugLog, errorMessage, errorStatus, mapLimit, unwrapPayload } from '../utils'
 import { today } from '../utils/time'
 
-/** nime.info 里 AniList 状态的缓存时长；详情页的状态不需要秒级新鲜 */
+/** anime.info 里 AniList 状态的缓存时长；详情页的状态不需要秒级新鲜 */
 const INFO_ANILIST_TTL_MS = 10 * 60 * 1000
+
+/** 这张缓存的上限。键是条目 ID 或标题，不设上限会随查询过的作品数一直增长 */
+const INFO_ANILIST_CACHE_MAX = 500
 
 /** 详情卡的取数并发。Bangumi 文档限 1 请求/秒，不宜更高 */
 export const INFO_FETCH_CONCURRENCY = 4
@@ -202,11 +205,11 @@ export class InfoService {
         const payload = unwrapPayload(raw) as { data?: { Page?: { media?: (AniListState & { id?: number })[] } } } | null
         const media = payload?.data?.Page?.media ?? []
         for (const item of media) {
-          if (Number.isFinite(item.id)) this.aniListCache.set(anilistKey(item.id as number), { at: Date.now(), state: item })
+          if (Number.isFinite(item.id)) this.rememberAniList(anilistKey(item.id as number), item)
         }
         // 没返回的也记一笔，避免同一批里反复重问
         for (const id of batch) {
-          if (!this.aniListCache.has(anilistKey(id))) this.aniListCache.set(anilistKey(id), { at: Date.now(), state: null })
+          if (!this.aniListCache.has(anilistKey(id))) this.rememberAniList(anilistKey(id), null)
         }
       } catch (error) {
         debugLog('[info] AniList 批量查询 %d 个 ID 失败: %s', batch.length, errorMessage(error))
@@ -214,6 +217,26 @@ export class InfoService {
         this.coolDownIfThrottled(error)
         return
       }
+    }
+  }
+
+  /**
+   * 写入 AniList 缓存并维持上限。
+   *
+   * 键是「条目 ID 或标题」，取详情卡的人越多条目越杂；不设上限时这张表会随运行时长一直长。
+   * 超出上限先删过期的，再按插入顺序删最早的一批。
+   */
+  private rememberAniList(key: string, state: AniListState | null): void {
+    this.aniListCache.set(key, { at: Date.now(), state })
+    if (this.aniListCache.size <= INFO_ANILIST_CACHE_MAX) return
+    const now = Date.now()
+    for (const [entryKey, entry] of this.aniListCache) {
+      if (this.aniListCache.size <= INFO_ANILIST_CACHE_MAX) break
+      if (now - entry.at >= INFO_ANILIST_TTL_MS) this.aniListCache.delete(entryKey)
+    }
+    for (const entryKey of this.aniListCache.keys()) {
+      if (this.aniListCache.size <= INFO_ANILIST_CACHE_MAX) break
+      this.aniListCache.delete(entryKey)
     }
   }
 
@@ -262,7 +285,7 @@ export class InfoService {
     try {
       // 上一批刚被判超限，短时间内不再打，直接退化
       if (Date.now() < this.aniListCooldownUntil) {
-        this.aniListCache.set(key, { at: Date.now(), state: null })
+        this.rememberAniList(key, null)
         return null
       }
       const raw = await this.http.post<unknown>(ANILIST_API_URL, {
@@ -272,13 +295,14 @@ export class InfoService {
       // GraphQL 的响应体是 `{ data: { Media } }`，与 `airing.ts` 同样要下探两层
       const payload = unwrapPayload(raw) as { data?: { Media?: AniListState } } | null
       state = payload?.data?.Media ?? null
-      if (!state) this.logger.warn('[info] AniList 未匹配到「%s」', title)
+      // 冷门条目匹配不到是正常结果，按 debug 记；真正的问题在下面的查询失败分支
+      if (!state) debugLog('[info] AniList 未匹配到「%s」', title)
     } catch (error) {
       // AniList 取不到不影响主体信息，状态退化为按日期推算
-      this.logger.warn('[info] AniList 查询「%s」失败: %s', title, errorMessage(error))
+      this.logger.warn('[info] AniList 查询「%s」失败（按日期推算）: %s', title, errorMessage(error))
       this.coolDownIfThrottled(error)
     }
-    this.aniListCache.set(key, { at: Date.now(), state })
+    this.rememberAniList(key, state)
     return state
   }
 

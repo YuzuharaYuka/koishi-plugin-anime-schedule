@@ -81,8 +81,10 @@ const TITLE_SEARCH_BUDGET = 24
  * 只负责「按 ID 取数据并缓存」；「据此决定怎么排期」由 `DigestService` 负责。
  */
 export class AiringStatusService {
-  /** 进程内缓存；按 AniList 条款不落盘 */
+  /** 进程内缓存；按 AniList 条款不落盘。上限见 `MEMORY_MAX` */
   private readonly memory = new Map<number, AiringState>()
+  /** 条目数上限：一部作品一条，正常一年也用不到，只为兜住「跑遍整个番剧库」的情况 */
+  private static readonly MEMORY_MAX = 3000
   /**
    * 标题 → AniList 条目 ID 的补映射结果。
    * 也是进程内缓存：bangumi-data 约三分之一的条目没带 `aniList` ID，搜到之后同一进程内不再重复搜索。
@@ -205,7 +207,7 @@ export class AiringStatusService {
         const entry = this.toState(item, now)
         if (!entry) continue
         ok++
-        this.memory.set(entry.aniListId, entry)
+        this.remember(entry)
         result.set(entry.aniListId, entry)
       }
     }
@@ -217,6 +219,23 @@ export class AiringStatusService {
       Date.now() - started,
     )
     return result
+  }
+
+  /**
+   * 写入进程内缓存并维持上限。
+   *
+   * 缓存键是 AniList 条目 ID，随查询过的作品数增长；不设上限时长时间运行会一直涨。
+   * 超出后按插入顺序淘汰最早的一批（Map 保持插入顺序）。
+   */
+  private remember(entry: AiringState): void {
+    this.memory.delete(entry.aniListId)
+    this.memory.set(entry.aniListId, entry)
+    let over = this.memory.size - AiringStatusService.MEMORY_MAX
+    if (over <= 0) return
+    for (const key of this.memory.keys()) {
+      if (over-- <= 0) break
+      this.memory.delete(key)
+    }
   }
 
   /** 串行执行，并在两次请求之间留出最小间隔 */

@@ -51,6 +51,29 @@ const SEASON_AIR_MATCH_DAYS = 45
  *  从数秒拖到三分多钟）；只限单次构建，更硬的总额度由 `AiringStatusService` 按进程控制。 */
 const TITLE_SEARCH_LIMIT = 8
 
+/**
+ * 一次构建里同一类逐条日志最多打几条。
+ *
+ * 「剔除 / 不采信某部作品的逐集档期」这类明细一部一行，周表一次构建能有上百行，
+ * 会把构建结果那几行挤掉；超过上限后只留一行汇总，需要时再看汇总里的数量。
+ */
+const PER_ITEM_LOG_LIMIT = 8
+
+/** 有上限的逐条日志：前 `PER_ITEM_LOG_LIMIT` 条照常输出，其余只计数 */
+function boundedLog(): { log: (message: string, ...args: unknown[]) => void; omitted: () => number } {
+  let used = 0
+  let skipped = 0
+  return {
+    log(message: string, ...args: unknown[]) {
+      if (used < PER_ITEM_LOG_LIMIT) {
+        used++
+        debugLog(message, ...args)
+      } else skipped++
+    },
+    omitted: () => skipped,
+  }
+}
+
 /** 订阅表的 tid 形如 `bgm:<Bangumi 条目 ID>` */
 const BGM_TID_RE = /^bgm:(\d+)$/
 
@@ -232,7 +255,7 @@ export class DigestService {
         schedule = this.extendFromNext(state.nextEpisode, candidate.entry, options)
         if (schedule) {
           debugLog(
-            '[digest] %s 的逐話表未覆盖窗口，改用 nextAiringEpisode 外推（ep%d @ %s）',
+            '[digest] %s 的逐话表未覆盖窗口，改用 nextAiringEpisode 外推（ep%d @ %s）',
             candidate.entry.title,
             state.nextEpisode.episode,
             new Date(state.nextEpisode.atMs).toISOString().slice(0, 16),
@@ -243,7 +266,7 @@ export class DigestService {
         stale++
         const last = state.schedule[state.schedule.length - 1]
         debugLog(
-          '[digest] %s 的 AniList 排期未覆盖 %s ~ %s（逐話表最新 %s），改用推算',
+          '[digest] %s 的 AniList 排期未覆盖 %s ~ %s（逐话表最新 %s），改用推算',
           candidate.entry.title,
           new Date(options.fromMs).toISOString().slice(0, 10),
           new Date(options.toMs).toISOString().slice(0, 10),
@@ -275,7 +298,7 @@ export class DigestService {
 
     const merged = this.finalizeCandidates([...replaced, ...predicted], options)
     if (fromAniList.size) {
-      debugLog('[digest] 采用 AniList 逐話時刻: %d 部作品 → %d 場（推算共 %d 場）', fromAniList.size, replaced.length, candidates.length)
+      debugLog('[digest] 采用 AniList 逐话时刻: %d 部 → %d 场（推算共 %d 场）', fromAniList.size, replaced.length, candidates.length)
     }
     if (suppressed.size) {
       debugLog('[digest] 因 AniList 首播在窗口之后而舍弃推算场次: %d 部', suppressed.size)
@@ -366,25 +389,37 @@ export class DigestService {
     const cached = this.followingCache.get(fromMs)
     if (cached) return cached
 
+    const since = fromMs - FOLLOWING_WINDOW_DAYS * 86400000
     const until = fromMs + FOLLOWING_WINDOW_DAYS * 86400000
     const keys = new Set<string>()
 
-    // ① 首播已越过窗口、但没有最终回的条目（长期番）。它们不在窗口内开播、扫不出场次，
-    // 必须单独按 `nextAirMs` 判断——好在数量极小，代价可以忽略。
+    // 逐条算出「窗口内的第一次场次」，不展开成场次列表：28 天窗口若走 `index.schedule()`，
+    // 会先生成三万多条候选再排序，而这里只关心「有没有」，一次除法就够
     for (const entry of this.index.all) {
-      if (entry.endMs !== null || entry.broadcastMs === null) continue
-      const next = this.nextAirMs(entry, fromMs)
-      if (next < until) keys.add(entry.key)
-    }
+      const base = entry.broadcastMs
+      if (base === null) continue
 
-    // ② 最近开播、且接下来两周仍有场次的条目：只需扫「近 14 天开播」这一段（更早且有最终回的
-    // 必然越过 `endMs`），真正还在播的那批已由 ① 收齐。这里**不能**用 `nextAirMs` 代替扫场次——
-    // 它不看 `endMs`，对早已完结的条目会算出荒谬的未来时刻。
-    for (const candidate of this.index.schedule(fromMs - FOLLOWING_WINDOW_DAYS * 86400000, until)) {
-      const entry = candidate.entry
-      if (candidate.atMs >= until) continue
-      // 越过最终回的场次是周期规则的余波，不算「还有排期」
-      if (entry.endMs !== null && candidate.atMs > entry.endMs) continue
+      // ① 没有最终回的条目（长期番）。它们可能不在窗口内开播、扫场次扫不到，改看下一話时刻。
+      //    这里**不能**反过来对「有最终回」的条目用 `nextAirMs`——它不看 `endMs`，
+      //    对早已完结的条目会算出荒谬的未来时刻。
+      if (entry.endMs === null && this.nextAirMs(entry, fromMs) < until) {
+        keys.add(entry.key)
+        continue
+      }
+
+      // ② 一次性放送：只有 `base` 那一刻算数
+      if (!entry.recurring) {
+        if (base >= since && base < until && (entry.endMs === null || base <= entry.endMs)) keys.add(entry.key)
+        continue
+      }
+
+      const period = (entry.periodDays ?? 7) * 86400000
+      if (!Number.isFinite(period) || period <= 0) continue
+      const step = since > base ? Math.ceil((since - base) / period) : 0
+      const atMs = base + step * period
+      if (atMs >= until) continue
+      // 窗口内第一次场次就越过最终回时，之后每一次也都越过，不必再展开
+      if (entry.endMs !== null && atMs > entry.endMs) continue
       keys.add(entry.key)
     }
 
@@ -585,6 +620,8 @@ export class DigestService {
     if (!subjects?.size) return candidates
     let dropped = 0
     let skipped = 0
+    // 这一段的明细一部一行，用有上限的记录器兜住
+    const detail = boundedLog()
     const kept = candidates.filter((candidate) => {
       const id = candidate.entry.bangumiId
       const base = candidate.entry.broadcastMs
@@ -604,7 +641,7 @@ export class DigestService {
       // （新一季被挂到了几年前已完结的同一部作品上）。
       const apiFirst = entry?.firstAirMs ?? null
       if (apiFirst !== null && Math.abs(base - apiFirst) > STALE_SEASON_GAP_DAYS * 86400000) {
-        debugLog('[digest] 剔除 %s：开播日期 %s 与逐集档期首集 %s 相差 %d 天，上游数据不一致',
+        detail.log('[digest] 剔除 %s: 开播日期 %s 与逐集档期首集 %s 相差 %d 天，上游数据不一致',
           candidate.entry.title, new Date(base).toISOString().slice(0, 10), new Date(apiFirst).toISOString().slice(0, 10), Math.round((base - apiFirst) / 86400000))
         dropped++
         return false
@@ -618,12 +655,12 @@ export class DigestService {
       const expectedLast = base + (total - 1) * period
       const offsetPeriods = (stated - expectedLast) / period
       if (Math.abs(offsetPeriods) > FINAL_EPISODE_TOLERANCE_PERIODS) {
-        debugLog('[digest] 不采信 %s 的逐集档期：第 %d 集推算 %s，档期给出 %s（差 %s 个周期）', candidate.entry.title, total, new Date(expectedLast).toISOString().slice(0, 10), lastLabel, offsetPeriods.toFixed(1))
+        detail.log('[digest] 不采信 %s 的逐集档期: 第 %d 集推算 %s，档期给出 %s（差 %s 个周期）', candidate.entry.title, total, new Date(expectedLast).toISOString().slice(0, 10), lastLabel, offsetPeriods.toFixed(1))
         return true
       }
       const spanDays = (stated - base) / 86400000
       if (spanDays > (total - 1) * periodDays + FINAL_EPISODE_SPAN_SLACK_DAYS) {
-        debugLog('[digest] 不采信 %s 的逐集档期：跨度 %d 天超出 %d 集的最小跨度', candidate.entry.title, Math.round(spanDays), total)
+        detail.log('[digest] 不采信 %s 的逐集档期: 跨度 %d 天超出 %d 集的最小跨度', candidate.entry.title, Math.round(spanDays), total)
         return true
       }
 
@@ -634,10 +671,12 @@ export class DigestService {
       const candidateDay = Math.floor((candidate.atMs + 9 * 3600000) / 86400000)
       const lastDay = Math.floor(stated / 86400000)
       if (candidateDay - lastDay <= FINAL_EPISODE_DAY_GRACE) return true
-      debugLog('[digest] 剔除 %s：末集 %s，本场已在其后 %d 天', candidate.entry.title, lastLabel, candidateDay - lastDay)
+      detail.log('[digest] 剔除 %s: 末集 %s，本场已在其后 %d 天', candidate.entry.title, lastLabel, candidateDay - lastDay)
       dropped++
       return false
     })
+    const omitted = detail.omitted()
+    if (omitted > 0) debugLog('[digest] 另有 %d 条逐集档期明细未展开（同上）', omitted)
     if (dropped > 0) debugLog('[digest] 剔除已播完的作品 %d 部（Bangumi 逐集档期）', dropped)
     if (skipped > 0) debugLog('[digest] %d 部由 AniList 判定，逐集档期未参与', skipped)
     return kept
@@ -969,6 +1008,9 @@ export class DigestService {
     window: { date: string; fromMs: number; tomorrowStartMs: number },
     items: DigestItem[],
   ): DigestGroup[] {
+    // 一场都没有时不给分组：否则会得到「一个空分组」，`finish` 的判空失效，
+    // 空的一天会被当成正常内容推送出去（应当走 `emptyDaily` 那类文案）
+    if (!items.length) return []
     if (kind === 'night') {
       const evening = items.filter((item) => item.atMs < window.tomorrowStartMs)
       const dawn = items.filter((item) => item.atMs >= window.tomorrowStartMs)
@@ -1199,7 +1241,16 @@ export class DigestService {
     )
     const subjects = await this.subjectsOf(airing)
 
-    const items = await this.buildItems(airing, wanted, subjects, airingStates)
+    // 与排期表同一个收尾：能取到 AniList 逐話時刻就换成真实时刻，取不到才用周期推算。
+    // 提醒按这个时刻触发，用推算值会在停播周、改档、首周多集连播时提前或错后
+    const scheduled = this.applyAiringSchedule(airing, airingStates, {
+      fromMs: startMs,
+      toMs: endMs - 1,
+      activeOnly: false,
+      onePerTitle: true,
+      now,
+    })
+    const items = await this.buildItems(scheduled, wanted, subjects, airingStates)
     debugLog('[digest] 订阅排期: %d 条订阅 → 未来 %d 天内 %d 场', tids.length, days, items.length)
     return items.sort((a, b) => a.atMs - b.atMs)
   }
@@ -1232,14 +1283,14 @@ export class DigestService {
     seasonLabel = '',
   ): Digest {
     if (!groups.length) {
-      debugLog('[digest] %s 无内容 (%s)', kind, emptyText)
+      debugLog('[digest] %s 无内容: %s', kind, emptyText)
       return { kind, header, summary: emptyText, groups: [], seasonLabel, generatedAt: now }
     }
     const limited = this.applyLimit(groups)
     const items = groups.flatMap((group) => group.items)
     const lateNight = items.filter((item) => Number(item.time.slice(0, 2)) < LATE_NIGHT_END_HOUR).length
     const base = `${summaryPrefix}${this.messages.summaryOf(items.length, lateNight)}`
-    debugLog('[digest] %s 构建完成: %d 组 / %d 部 (深夜 %d)%s',
+    debugLog('[digest] %s 构建完成: %d 组 / %d 部（深夜 %d）%s',
       kind, limited.groups.length, items.length, lateNight, limited.truncated ? `，${limited.truncated}` : '')
     return {
       kind,
@@ -1261,7 +1312,9 @@ export class DigestService {
     // 0 表示不限制
     if (max <= 0 || total <= max) return { groups, truncated: '' }
 
-    const budget = Math.max(1, Math.floor(max / groups.length))
+    // 额度允许为 0：`maxItems` 小于分组数时先每组给 0，再由下面的轮转把额度发给排在前面的组，
+    // 这样总数才真的不超过上限（此前用 `Math.max(1, …)`，上限被分组数撑破）
+    const budget = Math.floor(max / groups.length)
     const taken = groups.map((group) => Math.min(group.items.length, budget))
     let used = taken.reduce((sum, value) => sum + value, 0)
     while (used < max) {
@@ -1275,7 +1328,10 @@ export class DigestService {
       if (!progressed) break
     }
 
-    const limited = groups.map((group, index) => ({ ...group, items: group.items.slice(0, taken[index]) }))
+    // 一条都没分到的分组直接去掉，避免留下只有标题的空列
+    const limited = groups
+      .map((group, index) => ({ ...group, items: group.items.slice(0, taken[index]) }))
+      .filter((group) => group.items.length > 0)
     return { groups: limited, truncated: this.messages.truncated(used, total) }
   }
 
@@ -1427,7 +1483,8 @@ export class DigestService {
       debugLog('[digest] 停用已完结订阅失败: %s', errorMessage(error))
       return 0
     }
-    debugLog('[digest] 已完结的订阅 %d 部已从列表移除: %s', finished.length, finished.join(', '))
+    const shown = finished.length > 8 ? `${finished.slice(0, 8).join(' ')} …` : finished.join(' ')
+    debugLog('[digest] 已完结的订阅 %d 部已停用: %s', finished.length, shown)
     return finished.length
   }
 

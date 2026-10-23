@@ -2,7 +2,7 @@ import { h } from 'koishi'
 import type { Context, Logger } from 'koishi'
 import { DIGEST_LABELS, getMessages } from '../constants'
 import type { Config } from '../config'
-import type { Digest, DigestItem, DigestKind, AnimeChannel } from '../types'
+import type { DigestItem, DigestKind, AnimeChannel } from '../types'
 import type { DigestService } from './digest'
 import type { Dispatcher, DispatchGuard } from './dispatch'
 import { digestKey, updateKey } from './dispatch'
@@ -25,6 +25,8 @@ interface PushResult {
 export class Scheduler {
   private timer: (() => void) | null = null
   private running = false
+  /** 已经提示过「没有推送目标」的类型，避免每天刷同一条 info */
+  private readonly noTargetWarned = new Set<DigestKind>()
   private lastMinuteKey = ''
   private lastReminderAt = 0
   /** 当天已经处理过的推送类型，避免「时刻已过」被每分钟重复执行 */
@@ -69,8 +71,11 @@ export class Scheduler {
     this.running = true
     try {
       const due = this.dueKinds(now)
+      const reminder = this.config.push.updateReminderEnabled && this.reminderDue(now)
+      // 没有到期的推送就不碰数据库：清理与落盘每天各跑一次即可，否则 tick 每分钟一次 DELETE
+      if (!due.length && !reminder) return
       for (const kind of due) await this.pushKind(kind, now)
-      if (this.config.push.updateReminderEnabled && this.reminderDue(now)) await this.pushUpdateReminders(now)
+      if (reminder) await this.pushUpdateReminders(now)
       await this.guard.cleanup()
       await this.onIdle()
     } catch (error) {
@@ -149,26 +154,24 @@ export class Scheduler {
 
     const channels = await this.enabledChannels(kind)
     if (!channels.length) {
-      this.logger.info('[push] %s: 没有启用的推送目标，跳过本次推送', DIGEST_LABELS[kind])
+      // 一个频道都没开时这条每天都会触发一次，只在首次给 info，之后按 debug 记
+      const message = '[push] %s: 没有启用的推送目标，跳过本次推送'
+      if (this.noTargetWarned.has(kind)) this.logger.debug(message, DIGEST_LABELS[kind])
+      else {
+        this.noTargetWarned.add(kind)
+        this.logger.info(message, DIGEST_LABELS[kind])
+      }
       return result
     }
     result.targets = channels.length
 
-    let content: Digest | null = null
-    // 订阅表的内容按群算，必须逐群构建；其余类型全群共用一份
-    const perChannel = kind === 'sub'
-    const cache = new Map<string, Digest>()
     const key = digestKey(kind, date)
 
     for (const channel of channels) {
       try {
-        const cacheKey = `${channel.platform}:${channel.channelId}`
-        let current: Digest | null = perChannel ? cache.get(cacheKey) ?? null : content
-        if (!current) {
-          current = await this.digest.build(kind, channel.platform, channel.channelId, now)
-          if (perChannel) cache.set(cacheKey, current)
-          else content = current
-        }
+        // 必须逐群构建：订阅集合按 `platform:channelId` 算，「已订阅」气泡不能跨群复用，
+        // 否则除第一个群以外都会显示第一个群的订阅标记
+        const current = await this.digest.build(kind, channel.platform, channel.channelId, now)
         if (!current.groups.length) {
           result.skipped++
           this.logger.debug('[push] %s: %s:%s 本次没有符合条件的作品，跳过', DIGEST_LABELS[kind], channel.platform, channel.channelId)
@@ -246,8 +249,9 @@ export class Scheduler {
     }
 
     for (const bucket of byChannel.values()) {
+      // 只订阅过、从未执行 `anime.on/off` 的群没有频道行，不能因此丢掉提醒
       const channel = await this.digest.getChannel(bucket.platform, bucket.channelId)
-      if (!channel) continue
+      const botId = channel?.botId
       result.targets++
 
       const fresh: DigestItem[] = []
@@ -277,9 +281,9 @@ export class Scheduler {
           ...lines,
         ].join('\n\n'))
 
-        const bot = this.ctx.bots.find((entry) => entry.selfId === channel.botId)
-        if (bot) await bot.sendMessage(channel.channelId, message)
-        else await this.ctx.broadcast([`${channel.platform}:${channel.channelId}`], message)
+        const bot = botId ? this.ctx.bots.find((entry) => entry.selfId === botId) : undefined
+        if (bot) await bot.sendMessage(bucket.channelId, message)
+        else await this.ctx.broadcast([`${bucket.platform}:${bucket.channelId}`], message)
         result.sent++
       } catch (error) {
         result.failed++

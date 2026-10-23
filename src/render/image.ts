@@ -2,8 +2,9 @@ import { createCanvas, type Canvas, type SKRSContext2D } from '@napi-rs/canvas'
 import { HttpClient } from '../services/network'
 import type { Context, Logger } from 'koishi'
 import { IMAGE_LIST_TWO_COLUMN_AT, IMAGE_LAYOUT, IMAGE_MAX_CARDS, LATE_NIGHT_END_HOUR, getMessages } from '../constants'
+import type { Messages } from '../constants'
 import type { Config } from '../config'
-import type { DigestGroup, DigestItem, RenderPayload } from '../types'
+import type { Digest, DigestGroup, DigestItem, RenderPayload } from '../types'
 import { font, FONT_SIZE, registerFonts } from './fonts'
 import { CoverStore } from './covers'
 import { formatClock, formatMoment, getTimeZoneOffsetMs } from '../utils/time'
@@ -20,14 +21,46 @@ import {
 } from './canvas'
 
 
+/** 「现在」分界线占用的高度，与 drawNowMarker 保持一致 */
+const NOW_MARKER_HEIGHT = 26
+
+/**
+ * encode 之后立刻释放画布的原生表面。
+ *
+ * 画布是 JS 对象，像素缓冲在 Skia 里；仅仅让它变成垃圾并不会马上归还内存，进程会一直占着
+ * 那个高水位。周表在 3 倍超采样下是 5040×10920，一块就是 220MB——实测不释放时常驻 870MB，
+ * 释放后 415MB，且反复出图不再增长。给 `width` 赋值会重建表面，置成 1×1 即等价于归还。
+ */
+function releaseSurface(canvas: Canvas): void {
+  canvas.width = 1
+  canvas.height = 1
+}
+
+/**
+ * 把一次构建结果转成渲染输入。
+ *
+ * 推送（`index.ts`）、指令（`handlers.ts`）与基准脚本都走这里，避免同一组字段写三遍——
+ * 之前基准脚本就因为漏了 `now` 直接抛 `RangeError`，而 `as never` 让类型检查也发现不了。
+ */
+export function toRenderPayload(digest: Digest, messages: Messages): RenderPayload {
+  return {
+    kind: digest.kind,
+    // 用构建时刻而非渲染时刻：「现在」分界线与列表内容自洽，同一份数据反复出图不漂移
+    now: digest.generatedAt,
+    header: digest.header,
+    summary: digest.summary,
+    groups: digest.groups,
+    seasonLabel: digest.seasonLabel,
+    rangeLabel: digest.rangeLabel ?? '',
+    footer: messages.footer,
+  }
+}
+
 /**
  * 风格化图片渲染器。四种版面共用页眉（标题 + 副标题 + 统计 + 时区）与页脚（数据来源），
  * 卡片文字顺序与配色统一为「标题 → 时间 → `ID:xxx` → 评分」。
  * 封面统一按 `1 : 1.4` 等比完整显示，文字块的竖直位置只由版式常量决定，故同一版面基线一致。
  */
-/** 「现在」分界线占用的高度，与 drawNowMarker 保持一致 */
-const NOW_MARKER_HEIGHT = 26
-
 export class Renderer {
   private readonly covers: CoverStore
   private ready = false
@@ -74,6 +107,7 @@ export class Renderer {
       encoded.length,
       this.config.render.jpegQuality,
     )
+    releaseSurface(canvas)
     return encoded
   }
 
@@ -99,6 +133,7 @@ export class Renderer {
       '[render] info 出图完成 (%dms)，尺寸 %dx%d，%d bytes',
       Date.now() - started, card.width, card.height, encoded.length,
     )
+    releaseSurface(canvas)
     return encoded
   }
 
@@ -190,8 +225,9 @@ export class Renderer {
   /** 选画布宽度：各版面在常量里各有固定宽度，保证同一版面每次出图尺寸一致 */
   private canvasWidth(payload: RenderPayload): number {
     const L = IMAGE_LAYOUT
-    if (payload.kind === 'weekly') return L.weekWidth
+    // 列表排版优先：它的画布宽度只由版式决定，与表种无关（weekly + list 也走 900）
     if (this.config.output.layout === 'list') return L.listWidth
+    if (payload.kind === 'weekly') return L.weekWidth
     return L.timelineWidth
   }
 
@@ -275,7 +311,7 @@ export class Renderer {
       } else {
         this.drawTimelineEntry(
           ctx, element.item, covers.get(element.item.coverUrl) ?? null,
-          spineX, element.centre - L.rowHeight / 2, width, night,
+          spineX, element.centre - L.rowHeight / 2, night,
         )
       }
     }
@@ -381,7 +417,6 @@ export class Renderer {
     cover: Canvas | null,
     spineX: number,
     y: number,
-    canvasWidth: number,
     night: boolean,
   ): void {
     const L = IMAGE_LAYOUT
@@ -446,8 +481,9 @@ export class Renderer {
     ctx.textBaseline = 'top'
 
     // ── 标题 ──
-    const titleLines = this.wrapText(ctx, item.name, firstLineWidth, dual ? 1 : L.cardTitleLines)
+    // 字体必须先设：`wrapText` 用当前 `ctx.font` 量宽度，否则会按上一段残留的字号折行
     ctx.font = font(FONT_SIZE.cardTitle, true)
+    const titleLines = this.wrapText(ctx, item.name, firstLineWidth, dual ? 1 : L.cardTitleLines)
     ctx.fillStyle = THEME.title
     titleLines.forEach((line, index) => {
       ctx.fillText(line, left, top + index * L.cardTitleLineHeight)

@@ -30,8 +30,10 @@ export function registerFonts(requestedFamily: string, logger: Logger): void {
   boldFamily = `${regularFamily} Bold`
 
   if (!registerFirst(FONT_CANDIDATES, regularFamily)) {
-    logger.warn('[render] 未找到可用的中文字体，图片中的中文可能显示为方块')
-    logger.warn('[render] 请安装 Noto Sans CJK 等中文字体，或确认系统字体目录中有 msyh.ttc / simhei.ttf')
+    logger.warn(
+      '[render] 未找到可用的中文字体，图片中的中文会显示为方块。'
+      + '请安装 Noto Sans CJK，或确认系统字体目录中存在 msyh.ttc / simhei.ttf',
+    )
   }
 
   if (!registerFirst(BOLD_FONT_CANDIDATES, boldFamily)) {

@@ -148,7 +148,7 @@ export const Config: Schema<Config> = Schema.intersect([
   Schema.object({
     content: Schema.object({
       maxItems: Schema.number()
-        .min(0).step(10)
+        .min(0).step(1)
         .description('单次推送最多显示多少部，0 不限制')
         .default(0),
       longRunningThreshold: Schema.number()
@@ -259,7 +259,7 @@ export const Config: Schema<Config> = Schema.intersect([
         .description('请求失败重试次数')
         .default(2),
       debug: Schema.boolean()
-        .description('输出调试日志')
+        .description('输出调试日志（逐部作品与每次请求的细节，构建结果与推送结果始终输出）')
         .default(false),
     }),
   }).description('其他'),
@@ -284,6 +284,11 @@ export function normalizeConfig(config: Config): Config {
   // 旧版本的 `both` 形态已移除：非 `text` 一律按图片处理
   const format: DigestFormat = config.output?.format === 'text' ? 'text' : 'image'
 
+  // 轮询间隔不能大于提前量：调度器每 poll 分钟检查一次 [now, now+lookahead] 窗口，
+  // 间隔更大时两次检查之间会留下覆盖不到的空档，场次静默漏发
+  const lookahead = int(config.push?.updateLookaheadMinutes, 30, 1)
+  const poll = int(config.push?.updatePollMinutes, 10, 1)
+
   return {
     ...config,
     timeZone: resolveTimeZone(config.timeZone, 'Asia/Shanghai' as TimeZone),
@@ -295,8 +300,8 @@ export function normalizeConfig(config: Config): Config {
       nightTime: time(config.push?.nightTime, '21:00'),
       weeklyTime: time(config.push?.weeklyTime, '08:00'),
       seasonTime: time(config.push?.seasonTime, '08:00'),
-      updateLookaheadMinutes: int(config.push?.updateLookaheadMinutes, 30, 1),
-      updatePollMinutes: int(config.push?.updatePollMinutes, 10, 1),
+      updateLookaheadMinutes: lookahead,
+      updatePollMinutes: Math.min(poll, lookahead),
     },
     content: {
       maxItems: int(config.content?.maxItems, 0),

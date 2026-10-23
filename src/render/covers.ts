@@ -8,14 +8,32 @@ import {
   COVER_CACHE_MAX_FILES,
   COVER_CACHE_TTL_MS,
   COVER_MAX_BYTES,
+  COVER_MEMORY_MAX_BYTES,
   COVER_TIMEOUT_MS,
 } from '../constants'
 import type { CoverRequest } from '../types'
-import { mapLimit } from '../utils'
+import { errorMessage, mapLimit } from '../utils'
 import { HttpClient } from '../services/network'
 
 /** 等待一张封面解码完成的最长时间 */
 const DECODE_WAIT_MS = 5000
+
+/**
+ * 解码后画布的最大边长。
+ *
+ * 版面里封面最大画到约 690 物理像素（季表卡片高 292、超采样 3 倍）；原图是 1414×2000，
+ * 按原尺寸留在内存里单张 11MB，一次周表（近百张）就是 1GB。压到 800 后单张 1.8MB，
+ * 与最大用量仍留有余量。
+ */
+const COVER_MAX_EDGE = 800
+
+/**
+ * 磁盘缓存键的版本号。
+ *
+ * 候选尺寸顺序变更后必须改它：旧缓存里 `l` 地址存的是 150px 的 `c` 图，不改版本会继续命中，
+ * 模糊封面要等到 TTL 过期才消失。旧文件由 `prune()` 按 TTL 与数量上限自然清掉。
+ */
+const COVER_CACHE_VERSION = 2
 
 /**
  * 单张封面的总时间预算（含多候选地址）。
@@ -25,13 +43,24 @@ const DECODE_WAIT_MS = 5000
  */
 const COVER_TOTAL_BUDGET_MS = 12000
 
-/** 同一张封面的备用地址：Bangumi 图床按尺寸分目录（`/pic/cover/l|c|m|s/`），个别条目会缺某个尺寸，需逐个回退 */
+/**
+ * 同一张封面的备用地址：Bangumi 图床按尺寸分目录（`/pic/cover/l|c|m|s/`），
+ * 个别条目会缺某个尺寸，需逐个回退。
+ *
+ * **原地址必须排第一**：调用方传进来的就是 `large`，而 `c` 只有 150×212，
+ * 超采样下要放大数倍，明显发糊。
+ */
 function coverUrlCandidates(url: string): string[] {
   const matched = /^(https?:\/\/[^/]+\/pic\/cover\/)([a-z]+)(\/.*)$/i.exec(url)
   if (!matched) return [url]
   const [, prefix, , suffix] = matched
-  const order = ['c', 'l', 'm', 's', '']
-  return [...new Set(order.map((size) => `${prefix}${size}${suffix}`))]
+  const sizes = ['l', 'c', 'm', 's']
+  return [...new Set([url, ...sizes.map((size) => `${prefix}${size}${suffix}`)])]
+}
+
+/** 画布占用的近似字节数（RGBA 每像素 4 字节） */
+function canvasBytes(canvas: Canvas): number {
+  return canvas.width * canvas.height * 4
 }
 
 /** 取出响应里的二进制；Koishi 的 http 返回响应体，axios 调用方会拿到完整响应对象 */
@@ -62,32 +91,44 @@ async function decodeToCanvas(buffer: Buffer): Promise<Canvas | null> {
   if (!loaded) return null
 
   if (!image.width || !image.height) return null
-  const canvas = createCanvas(image.width, image.height)
-  canvas.getContext('2d').drawImage(image, 0, 0)
+  // 一次性缩到 `COVER_MAX_EDGE` 以内：高分辨率原图留在内存里既占地方，绘制时还要再缩放一遍
+  const ratio = Math.min(1, COVER_MAX_EDGE / Math.max(image.width, image.height))
+  const width = Math.max(1, Math.round(image.width * ratio))
+  const height = Math.max(1, Math.round(image.height * ratio))
+  const canvas = createCanvas(width, height)
+  const ctx = canvas.getContext('2d')
+  if (ratio < 1) {
+    ctx.imageSmoothingEnabled = true
+    ctx.imageSmoothingQuality = 'high'
+  }
+  ctx.drawImage(image, 0, 0, width, height)
   return canvas
 }
 
 /** 等待图片解码完成，超时或失败返回 false */
-function waitForLoad(image: Image): Promise<boolean> {
-  if (typeof image.decode === 'function') {
-    return image.decode().then(() => true, () => false)
-  }
-  return new Promise<boolean>((resolve) => {
-    const timer = setTimeout(() => resolve(false), DECODE_WAIT_MS)
-    image.onload = () => {
-      clearTimeout(timer)
-      resolve(true)
-    }
-    image.onerror = () => {
-      clearTimeout(timer)
-      resolve(false)
-    }
+async function waitForLoad(image: Image): Promise<boolean> {
+  // `decode()` 自己不带超时：一张图卡住就会永久占着 `inflight`，因此与计时器赛跑。
+  // @napi-rs/canvas 的 Image 一定有 `decode`，不再保留 onload 回退。
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const guarded = new Promise<boolean>((resolve) => {
+    timer = setTimeout(() => resolve(false), DECODE_WAIT_MS)
   })
+  try {
+    return await Promise.race([image.decode().then(() => true, () => false), guarded])
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
 }
 
 /** 封面加载器：内存 → 磁盘 → 网络三级缓存 + 并发下载，同一张封面一次推送只下载一次 */
 export class CoverStore {
-  private readonly memory = new Map<string, Canvas | null>()
+  /**
+   * 内存缓存。值只能是解码成功的画布——下载或解码失败的结果**不入缓存**，
+   * 否则一次瞬时超时会让这张封面在进程重启前一直显示占位块。
+   */
+  private readonly memory = new Map<string, Canvas>()
+  /** `memory` 中画布占用的字节数，用于淘汰 */
+  private memoryBytes = 0
   private readonly inflight = new Map<string, Promise<Canvas | null>>()
   private readonly cacheRoot: string
   private cacheReady = false
@@ -144,18 +185,14 @@ export class CoverStore {
     })
     for (const entry of entries) result.set(entry.url, entry.canvas)
     const ok = entries.filter((entry) => entry.canvas).length
-    this.logger.debug('[render] 封面就绪 %d/%d 张 (%dms)', ok, urls.length, Date.now() - started)
-    // 封面缺失会影响版面，失败比例高时给出 info 提示便于定位
+    // 一行统计：有失败时升到 info（封面缺失会在图上显示为占位块，需要能被看见），
+    // 全部命中时只是调试细节
+    const detail = `预热命中 ${fromMemory} / 磁盘命中 ${fromDisk} / 新下载 ${downloaded} / 失败 ${urls.length - ok}`
+    const elapsed = Date.now() - started
     if (ok < urls.length) {
-      this.logger.info(
-        '[render] 封面 %d/%d 张可用（预热命中 %d，磁盘命中 %d，新下载 %d，失败 %d）',
-        ok,
-        urls.length,
-        fromMemory,
-        fromDisk,
-        downloaded,
-        urls.length - ok,
-      )
+      this.logger.info('[render] 封面 %d/%d 张可用（%s，%dms）', ok, urls.length, detail, elapsed)
+    } else {
+      this.logger.debug('[render] 封面 %d/%d 张就绪（%s，%dms）', ok, urls.length, detail, elapsed)
     }
     return result
   }
@@ -163,14 +200,19 @@ export class CoverStore {
   /** 单个封面：内存缓存 → 磁盘缓存 → 网络 */
   private loadOne(url: string): Promise<Canvas | null> {
     const cached = this.memory.get(url)
-    if (cached !== undefined) return Promise.resolve(cached)
+    if (cached) {
+      // 命中即视为「刚用过」：移到 Map 末尾，淘汰时从最早插入的那端开始
+      this.memory.delete(url)
+      this.memory.set(url, cached)
+      return Promise.resolve(cached)
+    }
 
     const running = this.inflight.get(url)
     if (running) return running
 
     const task = this.fetchAndDecode(url)
       .then((canvas) => {
-        this.memory.set(url, canvas)
+        if (canvas) this.remember(url, canvas)
         return canvas
       })
       .finally(() => {
@@ -178,6 +220,27 @@ export class CoverStore {
       })
     this.inflight.set(url, task)
     return task
+  }
+
+  /**
+   * 记入内存缓存，超出总量上限时淘汰最久未使用的。
+   *
+   * 按字节而不是按张数：封面尺寸差距很大（150px 的缩略图与 800px 的原图差 20 倍），
+   * 按张数算会让上限形同虚设。
+   */
+  private remember(url: string, canvas: Canvas): void {
+    const existing = this.memory.get(url)
+    if (existing) this.memoryBytes -= canvasBytes(existing)
+    // 先删再插，位置才会移到末尾（`Map.set` 对已存在的键不改顺序）
+    this.memory.delete(url)
+    this.memory.set(url, canvas)
+    this.memoryBytes += canvasBytes(canvas)
+    for (const [key, value] of this.memory) {
+      if (this.memoryBytes <= COVER_MEMORY_MAX_BYTES) break
+      if (key === url) break
+      this.memory.delete(key)
+      this.memoryBytes -= canvasBytes(value)
+    }
   }
 
   private async fetchAndDecode(url: string): Promise<Canvas | null> {
@@ -227,12 +290,12 @@ export class CoverStore {
         return null
       }
       if (buffer.byteLength > COVER_MAX_BYTES) {
-        this.logger.debug('[render] 封面体积超过上限 (%d bytes)，使用占位块: %s', buffer.byteLength, url)
+        this.logger.debug('[render] 封面体积超过上限（%d bytes），使用占位块: %s', buffer.byteLength, url)
         return null
       }
       return buffer
     } catch (error) {
-      this.logger.debug('[render] 封面下载失败，改用占位块 (%s): %s', url, String(error))
+      this.logger.debug('[render] 封面下载失败，改用占位块（%s）: %s', url, errorMessage(error))
       this.http.hintOnFailure(error)
       return null
     }
@@ -241,7 +304,8 @@ export class CoverStore {
   // #region 磁盘缓存
 
   private filePath(url: string): string {
-    const hash = createHash('sha1').update(url).digest('hex')
+    // 键里带上版本：候选尺寸顺序变过之后，旧文件里存的是低清图，不能继续命中
+    const hash = createHash('sha1').update(`v${COVER_CACHE_VERSION}|${url}`).digest('hex')
     return resolve(this.cacheRoot, hash.slice(0, 2), `${hash}.img`)
   }
 
@@ -285,7 +349,7 @@ export class CoverStore {
       await fs.rm(temp, { force: true }).catch(() => undefined)
       if (!this.cacheDisabled) {
         this.cacheDisabled = true
-        this.logger.debug('[render] 封面磁盘缓存不可用，仅使用内存缓存: %s', String(error))
+        this.logger.debug('[render] 封面磁盘缓存不可用，仅用内存缓存: %s', errorMessage(error))
       }
     }
   }
@@ -320,7 +384,7 @@ export class CoverStore {
       }
     } catch (error) {
       if ((error as { code?: string }).code !== 'ENOENT') {
-        this.logger.debug('[render] 清理封面缓存失败: %s', String(error))
+        this.logger.debug('[render] 清理封面缓存失败: %s', errorMessage(error))
       }
     }
   }

@@ -12,9 +12,9 @@ import { createContext } from './context'
 import { Config as ConfigSchema, normalizeConfig, type Config } from '../src/config'
 import { DigestService } from '../src/services/digest'
 import { BangumiDataIndex } from '../src/data/bangumi-data'
-import { Renderer } from '../src/render/image'
+import { Renderer, toRenderPayload } from '../src/render/image'
 import { HttpClient } from '../src/services/network'
-import type { Digest, ImageLayout, RenderPayload } from '../src/types'
+import type { Digest, ImageLayout } from '../src/types'
 import { getMessages } from '../src/constants'
 import { setupDebug } from '../src/utils'
 
@@ -77,16 +77,7 @@ async function main() {
 
   await fs.mkdir(target, { recursive: true })
 
-  const payloadOf = (item: Digest): RenderPayload => ({
-    kind: item.kind,
-    now: item.generatedAt,
-    header: item.header,
-    summary: item.summary,
-    groups: item.groups,
-    seasonLabel: item.seasonLabel,
-    rangeLabel: item.rangeLabel ?? '',
-    footer: getMessages(config.locale).footer,
-  })
+  const messages = getMessages(config.locale)
 
   const jobs: { name: string; build: () => Promise<Digest> }[] = [
     { name: 'daily', build: () => digest.buildDaily(0, subscribed, FIXED_NOW) },
@@ -119,7 +110,7 @@ async function main() {
       if (!item) continue
       if (name === 'season' && entry.layout === 'list') continue
       const started = Date.now()
-      const buffer = await renderer.render(payloadOf(item))
+      const buffer = await renderer.render(toRenderPayload(item, messages))
       const file = resolve(target, `${name}-${entry.layout}.jpg`)
       await fs.writeFile(file, buffer)
       console.log(`${name}-${entry.layout}: ${buffer.length} bytes (${Date.now() - started}ms)`)
@@ -131,7 +122,7 @@ async function main() {
   const season = built.find((value) => value.kind === 'season')
   if (season) {
     const started = Date.now()
-    const buffer = await renderer.render(payloadOf(season))
+    const buffer = await renderer.render(toRenderPayload(season, messages))
     await fs.writeFile(resolve(target, 'season-grid.jpg'), buffer)
     console.log(`season-grid: ${buffer.length} bytes (${Date.now() - started}ms)`)
   }

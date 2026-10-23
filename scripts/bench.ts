@@ -22,7 +22,7 @@ import { createContext } from './context'
 import { BangumiDataIndex } from '../src/data/bangumi-data'
 import { DigestService } from '../src/services/digest'
 import { AiringStatusService } from '../src/services/airing'
-import { Renderer } from '../src/render/image'
+import { Renderer, toRenderPayload } from '../src/render/image'
 import { HttpClient } from '../src/services/network'
 import { Config as ConfigSchema, normalizeConfig, type Config } from '../src/config'
 import { getMessages } from '../src/constants'
@@ -73,7 +73,7 @@ async function main() {
         : kind === 'night' ? await digest.buildNight(new Set())
         : kind === 'weekly' ? await digest.buildWeekly()
         : await digest.buildSeason(0, new Set())
-      await run(label, () => renderer.render({ ...built, messages } as never))
+      await run(label, () => renderer.render(toRenderPayload(built, messages)))
     }
     console.log('')
   }

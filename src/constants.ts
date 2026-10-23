@@ -150,6 +150,15 @@ export const COVER_CACHE_DIR = ['data', 'anime-schedule', 'covers']
 export const COVER_CACHE_TTL_MS = 21 * 24 * 60 * 60 * 1000
 export const COVER_CACHE_MAX_FILES = 1200
 
+/**
+ * 内存里保留的解码后封面总量上限（按 RGBA 字节算）。
+ *
+ * 单张 800px 的封面约 1.8MB，96MB 约合 50 张。插件是常驻进程，封面缓存若无上限会随
+ * 渲染过的作品数一路增长；这里只保证「短时间内重复出图不必重新解码」，
+ * 超出部分照常回落到磁盘缓存。
+ */
+export const COVER_MEMORY_MAX_BYTES = 96 * 1024 * 1024
+
 /** 图片渲染用的字体候选，按平台常见路径排列，找不到时回退到运行环境默认字体 */
 export const FONT_CANDIDATES: string[] = [
   'C:/Windows/Fonts/msyh.ttc',

@@ -70,6 +70,15 @@ export interface InfoCard {
  * 作品详情卡：三段式（header 封面 + 右栏信息 / body 全宽简介 / footer 两列）。
  * 封面只与 header 并排，不向下穿透；底部两列顶部对齐、各自决定高度。
  */
+/**
+ * 详情卡的尺寸度量只需要一个上下文：新建画布是同步的重操作，而一次关键词查询最多要量 20 张卡。
+ */
+let measureSurface: SKRSContext2D | null = null
+function measureContext(): SKRSContext2D {
+  if (!measureSurface) measureSurface = createCanvas(L.width, 10).getContext('2d')
+  return measureSurface
+}
+
 export function renderInfoCard(card: InfoCard): { width: number; height: number; draw: (ctx: SKRSContext2D) => void } {
   const { info, messages, cover } = card
   // 卡片画在 x=padding、宽 width-padding*2；内容再各让 padding，故内容区为 width-padding*4
@@ -81,9 +90,13 @@ export function renderInfoCard(card: InfoCard): { width: number; height: number;
   )
   const textWidth = inner - posterWidth - L.gap
 
-    // 高度取决于折行结果，先用同宽临时画布量一遍
-  const measure = createCanvas(L.width, 10).getContext('2d')
-  const titleLines = wrapText(measure, info.name, textWidth, L.titleSize, 2, true)
+  // 高度取决于折行结果，先用同宽上下文量一遍（复用同一个，不必每张卡都新建画布）
+  const measure = measureContext()
+  // 「已订阅」徽标贴右缘，标题折行必须先让出这块宽度，否则首行末字会被盖住
+  measure.font = font(L.chipSize, true)
+  const badgeWidth = info.subscribed ? measure.measureText(messages.subscribedBadge).width + 20 : 0
+  const titleWidth = badgeWidth > 0 ? textWidth - badgeWidth - 8 : textWidth
+  const titleLines = wrapText(measure, info.name, titleWidth, L.titleSize, 2, true)
   const chips = buildChips(info, messages)
   const chipRows = layoutChips(measure, chips, textWidth)
   const cleanSummary = stripSummaryNoise(info.summary)
@@ -104,7 +117,7 @@ export function renderInfoCard(card: InfoCard): { width: number; height: number;
     ? L.summaryGap + L.sectionTitleSize + L.sectionTitleGap + summaryLines.length * L.bodyLineHeight
     : 0
 
-    // 左列按 12 个胶囊精确算宽，右列固定宽度；中间空隙由剩余空间吸收
+  // 左列按 12 个胶囊精确算宽，右列固定宽度；中间空隙由剩余空间吸收
   const scoreColumnWidth = L.scoreChartWidth
   const scoreColumnX = L.padding + inner - scoreColumnWidth
   const progressColumnWidth = L.epPerRow * L.epMinWidth + (L.epPerRow - 1) * L.epGap
@@ -142,11 +155,8 @@ export function renderInfoCard(card: InfoCard): { width: number; height: number;
     // 「已订阅」贴标题行右侧，右边缘与卡片内边距对齐。用低饱和软胶囊而非实心色块：
     // 详情卡只有一个状态标记，实心色块会与标题争视觉重心
     if (info.subscribed) {
-      const badgeFont = font(L.chipSize, true)
-      ctx.font = badgeFont
-      const width = ctx.measureText(messages.subscribedBadge).width + 20
-      drawPill(ctx, messages.subscribedBadge, textLeft + textWidth - width, top, {
-        font: badgeFont,
+      drawPill(ctx, messages.subscribedBadge, textLeft + textWidth - badgeWidth, top, {
+        font: font(L.chipSize, true),
         color: THEME.accent,
         background: THEME.accentSoft,
         height: 24,
