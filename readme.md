@@ -60,7 +60,7 @@ npm i koishi-plugin-anime-schedule
 | `output.infoKeywordLimit` | `20` | `anime.info` 按关键词最多出几部，`0` 不限制 |
 | `output.showScore` | `true` | 显示评分，评价不足 10 人时隐藏 |
 | `localize.titleStyle` | `localized` | `localized` 仅中文 / `both` 中文（日文原名）/ `original` 仅日文原名 |
-| `localize.scoreTtlHours` | `24` | 评分与评价人数的缓存小时数 |
+| `localize.scoreTtlHours` | `24` | 评分与评价人数的后台刷新间隔，到期不阻塞出图 |
 | `render.jpegQuality` | `100` | 图片编码质量，调低可减小体积 |
 | `render.supersample` | `3` | 超采样倍数，提升小字与封面清晰度；`1` 最省体积 |
 | `advanced.debug` | `false` | 输出调试日志 |

@@ -49,8 +49,20 @@ export const BANGUMI_DATA_FILE = 'bangumi-data.json'
 /** bangumi-data 回退缓存的目录（相对于 ctx.baseDir），与本地化缓存放在一起 */
 export const DATA_DIR = ['data', 'anime-schedule']
 
-/** 插件版本与主页，请求 Bangumi 时用于自报身份 */
-export const PLUGIN_VERSION = '1.0.0'
+/**
+ * 插件版本与主页，请求 Bangumi 时用于自报身份。
+ *
+ * 版本号从 `package.json` 读：单独维护一份字面量必然会在发版时漏更新（它曾停在 1.0.0），
+ * 而 `package.json` 一定随包发布，读它不会失效。
+ */
+export const PLUGIN_VERSION: string = (() => {
+  try {
+    const pkg = require('../package.json') as { version?: string }
+    return pkg.version ?? '0.0.0'
+  } catch {
+    return '0.0.0'
+  }
+})()
 export const PLUGIN_HOMEPAGE = 'https://github.com/YuzuharaYuka/koishi-plugin-anime-schedule'
 
 /**
