@@ -103,6 +103,9 @@ export const LOCALIZE_CACHE_FILE = 'localize-cache.json'
  *
  * 比标题封面的 cacheTtlDays 短得多：新番开播头几周评分天天在变，样本量从个位数
  * 涨到几百，用 30 天缓存会一直显示「只有十几个人投票」时的噪声值。
+ *
+ * 到期只触发后台补取（`Localizer.kickScoreRefresh()`），不阻塞构建：评分是一张表的
+ * 附属信息，为它把整张表推迟十几秒不划算。
  */
 export const DEFAULT_SCORE_TTL_HOURS = 24
 
@@ -216,6 +219,18 @@ export const MAX_SUPERSAMPLE = 5
  */
 export const DAILY_OFFSET_MIN = -7
 export const DAILY_OFFSET_MAX = 7
+
+/**
+ * 构建结果的复用窗口（毫秒）。
+ *
+ * 推送遍历频道时每个群都调一次构建，指令层也常被连着问同一张表。这些调用的差别只有
+ * 「已订阅」标记，其余部分（场次推算、AniList 状态、Bangumi 详情、封面地址）完全相同，
+ * 因此一份结果在窗口内可以重复用，订阅标记事后再按频道注入。
+ */
+export const BUILD_CACHE_TTL_MS = 5 * 60 * 1000
+
+/** 构建结果同时留存几份（日/深夜/周/季 × 少量偏移），超出丢最早的一份 */
+export const BUILD_CACHE_MAX_ENTRIES = 16
 
 /** 注册到 canvas 的字体族名，与 config.render.fontFamily 的默认值保持一致 */
 export const DEFAULT_FONT_FAMILY = 'Anime Schedule Sans'

@@ -101,6 +101,9 @@ function platformOf(session: Session): string {
 async function replyDigest(deps: HandlerContext, session: Session, digest: Digest): Promise<void> {
   const { config, renderer, logger } = deps
 
+  // 内容已经拿到手，评分过期的条目趁出图这段时间在后台补，不占用这次指令的等待
+  deps.digest.localizer.kickScoreRefresh()
+
   if (!digest.groups.length) {
     await session.send([digest.header, digest.summary].filter(Boolean).join('\n'))
     return

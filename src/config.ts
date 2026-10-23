@@ -202,7 +202,7 @@ export const Config: Schema<Config> = Schema.intersect([
         .default('localized'),
       scoreTtlHours: Schema.number()
         .min(1).step(1)
-        .description('评分缓存小时数')
+        .description('评分多久后台补取一次（小时），到期不阻塞构建')
         .default(DEFAULT_SCORE_TTL_HOURS),
       cacheTtlDays: Schema.number()
         .min(1).step(1)

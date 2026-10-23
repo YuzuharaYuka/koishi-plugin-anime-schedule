@@ -99,11 +99,12 @@ export class Renderer {
     const canvas = await this.draw(payload)
     const encoded = await canvas.encode('jpeg', this.config.render.jpegQuality)
     this.logger.debug(
-      '[render] %s 出图完成 (%dms)，尺寸 %dx%d (超采样 %dx)，%d bytes (jpeg q=%d)',
+      '[render] %s 出图完成（%dms），尺寸 %dx%d（超采样 %dx），%d bytes（jpeg q=%d）',
       payload.kind,
       Date.now() - started,
       canvas.width,
       canvas.height,
+      this.scale,
       encoded.length,
       this.config.render.jpegQuality,
     )

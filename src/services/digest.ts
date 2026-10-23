@@ -10,6 +10,8 @@ import type {
   LocalizeCacheEntry,
 } from '../types'
 import {
+  BUILD_CACHE_MAX_ENTRIES,
+  BUILD_CACHE_TTL_MS,
   DAILY_OFFSET_MAX,
   DAILY_OFFSET_MIN,
   LATE_NIGHT_END_HOUR,
@@ -108,6 +110,21 @@ function defaultTidOf(entry: IndexEntry): string | null {
   return entry.bangumiId === null ? null : `bgm:${entry.bangumiId}`
 }
 
+/**
+ * 把共享构建结果里的「已订阅」标记换成调用方频道的集合。
+ *
+ * 共享结果按空集合构建，因此条目上的标记全是 `false`，这里只需给命中的条目翻一个布尔值，
+ * 不必重排、重算摘要——那些都只跟条目内容有关。
+ */
+function withSubscribed(digest: Digest, subscribed: Set<string>): Digest {
+  if (!subscribed.size || !digest.groups.length) return digest
+  const groups = digest.groups.map((group) => ({
+    ...group,
+    items: group.items.map((item) => (subscribed.has(item.tid) ? { ...item, subscribed: true } : item)),
+  }))
+  return { ...digest, groups }
+}
+
 /** 一次排期查询的取用方式 */
 interface AiringsOptions {
   /** 查询区间（UTC 毫秒，左闭右开） */
@@ -129,6 +146,10 @@ interface AiringsOptions {
  */
 export class DigestService {
   readonly localizer: Localizer
+  /** 已构建结果的短缓存，见 `shared()` */
+  private readonly recentBuilds = new Map<string, { at: number; digest: Digest }>()
+  /** 同一份内容正被构建时，后来的调用直接等它，不重复构建 */
+  private readonly pendingBuilds = new Map<string, Promise<Digest>>()
 
   constructor(
     private ctx: Context,
@@ -1043,6 +1064,39 @@ export class DigestService {
   }
 
   /**
+   * 取共享构建结果，再把本频道的订阅标记补上。
+   *
+   * @param key 只由「内容口径」决定：表种、偏移、以及 `now` 落在哪一天/哪一季。同一个键在
+   *   `BUILD_CACHE_TTL_MS` 内只构建一次。
+   */
+  private async shared(key: string, create: () => Promise<Digest>, subscribed: Set<string>): Promise<Digest> {
+    const hit = this.recentBuilds.get(key)
+    if (hit && Date.now() - hit.at < BUILD_CACHE_TTL_MS) return withSubscribed(hit.digest, subscribed)
+
+    let pending = this.pendingBuilds.get(key)
+    if (!pending) {
+      pending = create()
+        .then((digest) => {
+          this.rememberBuild(key, digest)
+          return digest
+        })
+        .finally(() => this.pendingBuilds.delete(key))
+      this.pendingBuilds.set(key, pending)
+    }
+    return withSubscribed(await pending, subscribed)
+  }
+
+  private rememberBuild(key: string, digest: Digest): void {
+    // 先删后加：同一个键再构建一次时把它挪到队尾，淘汰的永远是最久没用过的那份
+    this.recentBuilds.delete(key)
+    this.recentBuilds.set(key, { at: Date.now(), digest })
+    for (const oldest of this.recentBuilds.keys()) {
+      if (this.recentBuilds.size <= BUILD_CACHE_MAX_ENTRIES) break
+      this.recentBuilds.delete(oldest)
+    }
+  }
+
+  /**
    * 每日更新表，`offset` 为相对今天的日期偏移（-1 表示前一天）。
    *
    * 传入 `subscribed` 时，已订阅的作品会在条目上带「已订阅」标记。
@@ -1054,10 +1108,12 @@ export class DigestService {
   ): Promise<Digest> {
     // 与配置项 `.min()/.max()` 共用同一对边界，避免「配置页能填、这里又被夹一次」
     const days = clamp(offset, DAILY_OFFSET_MIN, DAILY_OFFSET_MAX)
-    return this.buildAirings('daily', subscribed, now, (at) => {
+    const key = `daily|${days}|${today(this.timeZone, now)}`
+    const create = () => this.buildAirings('daily', EMPTY_SETS, now, (at) => {
       const startMs = getDayStartMs(addDays(today(this.timeZone, at), days, this.timeZone), this.timeZone)
       return { fromMs: startMs, toMs: startMs + 86400000 - 1, now: startMs }
     })
+    return this.shared(key, create, subscribed)
   }
 
   /**
@@ -1065,7 +1121,8 @@ export class DigestService {
    * 展示，因此熬夜追更时一眼就能看到现在之后还有什么可看。
    */
   async buildNight(subscribed: Set<string> = EMPTY_SETS, now = Date.now()): Promise<Digest> {
-    return this.buildAirings('night', subscribed, now, (at) => {
+    const key = `night|${today(this.timeZone, now)}`
+    const create = () => this.buildAirings('night', EMPTY_SETS, now, (at) => {
       const date = today(this.timeZone, at)
       const eveningStartMs = getDayStartMs(date, this.timeZone) + EVENING_START_HOUR * 3600000
       const tomorrowStartMs = getDayStartMs(addDays(date, 1, this.timeZone), this.timeZone)
@@ -1076,17 +1133,20 @@ export class DigestService {
         now: eveningStartMs,
       }
     })
+    return this.shared(key, create, subscribed)
   }
 
   /** 本周更新表，覆盖今天起七天，每部作品只占一条 */
   async buildWeekly(subscribed: Set<string> = EMPTY_SETS, now = Date.now()): Promise<Digest> {
-    return this.buildAirings('weekly', subscribed, now, (at) => {
+    const key = `weekly|${today(this.timeZone, now)}`
+    const create = () => this.buildAirings('weekly', EMPTY_SETS, now, (at) => {
       const start = today(this.timeZone, at)
       const startMs = getDayStartMs(start, this.timeZone)
       // 七天整：到「第 8 天 0 点」为止
       const endMs = getDayStartMs(addDays(start, 7, this.timeZone), this.timeZone)
       return { fromMs: startMs, toMs: endMs - 1, onePerTitle: true, now: startMs }
     })
+    return this.shared(key, create, subscribed)
   }
 
   /**
@@ -1098,7 +1158,9 @@ export class DigestService {
   async buildSeason(seasonOffset = 0, subscribed: Set<string> = EMPTY_SETS, now = Date.now()): Promise<Digest> {
     await this.prepare()
     const { year, startMonth } = this.resolveSeason(seasonOffset, now)
-    return this.buildSeasonOf(year, startMonth, subscribed, now)
+    // 同一季的内容与「今天」无关，键里不必带日期
+    const key = `season|${year}|${startMonth}`
+    return this.shared(key, () => this.buildSeasonOf(year, startMonth, EMPTY_SETS, now), subscribed)
   }
 
   /** 由「相对当前季度的偏移」算出目标季度 */
@@ -1255,12 +1317,17 @@ export class DigestService {
     return items.sort((a, b) => a.atMs - b.atMs)
   }
 
-  /** 按类型构建，供调度器与指令共用；订阅标记按目标频道计算 */
+  /**
+   * 按类型构建，供调度器与指令共用。
+   *
+   * 除订阅排期外都走 `shared()`：同一份内容在窗口内只构建一次，逐群推送与重复指令只多付
+   * 一次注入「已订阅」标记的工夫。
+   */
   async build(kind: DigestKind, platform: string, channelId: string, now = Date.now()): Promise<Digest> {
     const subscribed = await this.subscribedKeys(platform, channelId)
     if (kind === 'daily') return this.buildDaily(this.config.push.dailyOffsetDays, subscribed, now)
     if (kind === 'night') return this.buildNight(subscribed, now)
-    if (kind === 'weekly') return this.buildWeekly(subscribed)
+    if (kind === 'weekly') return this.buildWeekly(subscribed, now)
     if (kind === 'season') return this.buildSeason(0, subscribed, now)
     return this.buildSubscription(platform, channelId, now)
   }

@@ -169,8 +169,9 @@ export class Scheduler {
 
     for (const channel of channels) {
       try {
-        // 必须逐群构建：订阅集合按 `platform:channelId` 算，「已订阅」气泡不能跨群复用，
-        // 否则除第一个群以外都会显示第一个群的订阅标记
+        // 逐群构建，但除订阅标记外的部分由 `DigestService.shared()` 复用：订阅集合按
+        // `platform:channelId` 算，「已订阅」气泡不能跨群复用，否则除第一个群以外都会
+        // 显示第一个群的订阅标记
         const current = await this.digest.build(kind, channel.platform, channel.channelId, now)
         if (!current.groups.length) {
           result.skipped++
@@ -190,6 +191,9 @@ export class Scheduler {
         this.logger.warn('[push] 向 %s:%s 发送 %s 失败:', channel.platform, channel.channelId, DIGEST_LABELS[kind], error)
       }
     }
+
+    // 推送内容已经发完，评分过期的条目在后台补，不拖慢这一轮推送
+    this.digest.localizer.kickScoreRefresh()
 
     if (result.sent === 0 && result.failed === 0) {
       this.logger.info('[push] %s: 本次没有符合条件的作品，未发送任何消息', DIGEST_LABELS[kind])

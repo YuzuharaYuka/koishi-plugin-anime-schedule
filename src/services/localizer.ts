@@ -75,6 +75,9 @@ export class Localizer {
   private loadPromise: Promise<void> | null = null
   private dirty = false
   private flushTimer: (() => void) | null = null
+  /** 本次构建里评分过期、等出图之后在后台补取的条目 */
+  private readonly pendingScores = new Set<number>()
+  private refreshingScores = false
 
   constructor(
     private ctx: Context,
@@ -175,25 +178,20 @@ export class Localizer {
   }
 
   /**
-   * 这一条缓存是否还够用。标题封面与评分分开计保质期：前者几乎不变（`cacheTtlDays`），后者在
-   * 新番开播头几周天天在变（`scoreTtlHours`）。
+   * 标题、封面与首末集日期是否还能用。这几项基本不变，只受 `cacheTtlDays` 管。
    *
-   * @param wantEpisodeTimes 需要逐集档期时，缺档期的条目即使标题还新鲜也得重取一次。
+   * 评分不在其中：它只在开播头几周天天变，而重取一次评分要走整条
+   * `GET /v0/subjects/{id}` 请求。让评分过期去卡构建，等于为了一个数字把整张表推迟十几秒，
+   * 因此过期评分先照旧展示，构建结束后再由 `kickScoreRefresh()` 在后台补。
    */
-  private isFresh(entry: LocalizeCacheEntry, wantEpisodeTimes: boolean): boolean {
-    if (entry.missing) {
-      // 「不存在」也是有效结果：同一季内不必反复去问一个不会出现的条目
-      return Date.now() - entry.cachedAt < this.config.localize.cacheTtlDays * 24 * 60 * 60 * 1000
-    }
-
-    // 取过条目详情、却没取逐集档期，而这次需要档期 → 必须重取。旧版缓存没有 hasEpisodeTimes 字段，按「取过」处理。
-    if (wantEpisodeTimes && entry.hasEpisodeTimes === false) return false
-
-    // 评分单独算保质期：到期就重取详情，重取时仍按调用方的需要决定要不要连档期一起取
-    const scoreAt = entry.scoreCachedAt ?? entry.cachedAt
-    if (Date.now() - scoreAt >= this.config.localize.scoreTtlHours * 60 * 60 * 1000) return false
-
+  private isDisplayFresh(entry: LocalizeCacheEntry): boolean {
     return Date.now() - entry.cachedAt < this.config.localize.cacheTtlDays * 24 * 60 * 60 * 1000
+  }
+
+  /** 评分是否该重取；「条目不存在」的占位记录没有评分，不参与 */
+  private needsScoreRefresh(entry: LocalizeCacheEntry): boolean {
+    if (entry.missing) return false
+    return Date.now() - (entry.scoreCachedAt ?? entry.cachedAt) >= this.config.localize.scoreTtlHours * 60 * 60 * 1000
   }
 
   /**
@@ -223,7 +221,9 @@ export class Localizer {
       }
       // 过期条目也先返回，避免一次请求失败就让整张表掉封面
       result.set(id, cached)
-      if (!this.isFresh(cached, wantEpisodeTimes)) {
+      if (this.needsScoreRefresh(cached)) this.pendingScores.add(id)
+      // 只有展示数据过期、或这次要档期而缓存里没有档期时才阻塞构建
+      if (!this.isDisplayFresh(cached) || (wantEpisodeTimes && cached.hasEpisodeTimes === false)) {
         wanted.push(id)
         previous.set(id, cached)
       }
@@ -288,6 +288,51 @@ export class Localizer {
       debugLog('[localize] 未取到详情的条目: %s', missing.map((item) => item.id).join(' '))
     }
     return result
+  }
+
+  /**
+   * 把这次用到的、评分过期的条目在后台重取一遍。出图之后再调，让用户先看到内容。
+   *
+   * 不写在 `localizeByIds` 里自动跑，是因为快照与预览脚本要的结果必须只取决于本地缓存：
+   * 后台刷新会让同一份缓存在不同时刻构建出不同的评分。
+   */
+  kickScoreRefresh(): void {
+    if (this.refreshingScores || !this.pendingScores.size) return
+    const ids = [...this.pendingScores]
+    this.pendingScores.clear()
+    this.refreshingScores = true
+    void this.refreshScores(ids).finally(() => {
+      this.refreshingScores = false
+    })
+  }
+
+  /** 只补评分相关字段；逐集档期是另一笔请求，不在这里重取 */
+  private async refreshScores(ids: number[]): Promise<void> {
+    const started = Date.now()
+    let ok = 0
+    await mapLimit(ids, LOCALIZE_CONCURRENCY, async (id) => {
+      const stale = this.memory.get(id)
+      // 排队期间可能已被别的构建刷新过
+      if (!stale || !this.needsScoreRefresh(stale)) return
+      const subject = await this.fetchSubject(id)
+      if (!subject) return
+      ok++
+      this.memory.set(id, {
+        ...stale,
+        title: subject.name_cn?.trim() || subject.name,
+        coverUrl: subject.images?.large ?? subject.images?.common ?? '',
+        score: computeScore(subject.rating),
+        ratingTotal: typeof subject.rating?.total === 'number' ? subject.rating.total : null,
+        totalEpisodes: resolveEpisodeTotal(subject),
+        hasEpisodeTimes: stale.hasEpisodeTimes,
+        firstAirMs: stale.firstAirMs,
+        lastAirMs: stale.lastAirMs,
+        cachedAt: Date.now(),
+        scoreCachedAt: Date.now(),
+      })
+      this.scheduleFlush()
+    })
+    if (ok) debugLog('[localize] 后台补评分: %d 部（%dms）', ok, Date.now() - started)
   }
 
   /** 按条目 ID 取单个条目详情；条目不存在（404）或请求失败时返回 null */
