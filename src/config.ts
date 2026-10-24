@@ -259,7 +259,7 @@ export const Config: Schema<Config> = Schema.intersect([
         .description('请求失败重试次数')
         .default(2),
       debug: Schema.boolean()
-        .description('输出调试日志（逐部作品与每次请求的细节，构建结果与推送结果始终输出）')
+        .description('输出调试日志')
         .default(false),
     }),
   }).description('其他'),

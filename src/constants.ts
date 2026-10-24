@@ -134,6 +134,21 @@ export const LOCALIZE_CACHE_VERSION = 6
 /** 本地化缓存最大条目数，超出后按写入时间淘汰最旧的一半 */
 export const LOCALIZE_CACHE_MAX_ENTRIES = 5000
 
+/**
+ * 「不采信 / 已剔除」判定缓存的版本与有效期。
+ *
+ * 这些判定的输入都是慢变量（bangumi-data 的 `aniList` ID、Bangumi 逐集档期），
+ * 但上游偶尔会修数据，因此不设永久缓存：AniList 判定 7 天后复核，Bangumi 档期判定
+ * 30 天后复核（与本地化缓存一致）。
+ */
+export const VERDICT_CACHE_VERSION = 1
+export const VERDICT_CACHE_FILE = 'verdicts.json'
+export const VERDICT_CACHE_MAX_ENTRIES = 5000
+/** AniList 判定只保留 7 天：它来自外部 API，短周期复核更稳妥 */
+export const ANILIST_VERDICT_TTL_MS = 7 * 24 * 60 * 60 * 1000
+/** Bangumi 逐集档期判定来自本地化缓存，跟它一样保留 30 天 */
+export const EPISODE_VERDICT_TTL_MS = 30 * 24 * 60 * 60 * 1000
+
 /** 取逐集档期时的单页集数上限；超过这个数的长期番不靠集数判断完结 */
 export const EPISODE_QUERY_LIMIT = 100
 

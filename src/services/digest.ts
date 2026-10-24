@@ -21,6 +21,7 @@ import {
 import type { AiringState, ScheduledEpisode } from '../types'
 import type { AiringStatusService } from './airing'
 import { Localizer } from './localizer'
+import { VerdictCache } from './verdicts'
 import type { HttpClient } from './network'
 import { BangumiDataIndex, type AirCandidate, type IndexEntry } from '../data/bangumi-data'
 import {
@@ -146,6 +147,8 @@ interface AiringsOptions {
  */
 export class DigestService {
   readonly localizer: Localizer
+  /** 「不采信 / 已剔除」的持久化判定，避免每次构建重复请求与判断 */
+  readonly verdicts: VerdictCache
   /** 已构建结果的短缓存，见 `shared()` */
   private readonly recentBuilds = new Map<string, { at: number; digest: Digest }>()
   /** 同一份内容正被构建时，后来的调用直接等它，不重复构建 */
@@ -161,6 +164,7 @@ export class DigestService {
     private airing?: AiringStatusService,
   ) {
     this.localizer = new Localizer(ctx, config, logger, http)
+    this.verdicts = new VerdictCache(ctx, logger)
   }
 
   get timeZone(): string {
@@ -173,7 +177,7 @@ export class DigestService {
 
   /** 等索引与本地化缓存就绪 */
   private async prepare(): Promise<void> {
-    await Promise.all([this.index.ensure(), this.localizer.ensure()])
+    await Promise.all([this.index.ensure(), this.localizer.ensure(), this.verdicts.ensure()])
   }
 
   // #region 排期推算
@@ -468,6 +472,21 @@ export class DigestService {
    */
 
   /**
+   * 闸门 0：上次构建已经得出「这部已完结 / 这条记录不可信」的结论，直接复用，不再请求
+   * AniList，也不再为它取 Bangumi 逐集档期。只影响按播出时刻列作品的表，本季表不走这里。
+   */
+  private dropCachedVerdicts(candidates: AirCandidate[]): AirCandidate[] {
+    let dropped = 0
+    const kept = candidates.filter((candidate) => {
+      if (!this.verdicts.shouldDrop(candidate.entry, candidate.atMs)) return true
+      dropped++
+      return false
+    })
+    if (dropped > 0) debugLog('[digest] 按判定缓存剔除 %d 场', dropped)
+    return kept
+  }
+
+  /**
    * 闸门 1：只看本地索引就能判定「已播完」，**不产生任何请求**。依据是 bangumi-data 的 `end`
    * 与「近期开播且后续仍有排期」（当季条目 `end` 几乎为空，靠这条兜住）。
    */
@@ -500,10 +519,22 @@ export class DigestService {
     let dropped = 0
     const kept = candidates.filter((candidate) => {
       const state = candidate.entry.aniListId === null ? undefined : airing.get(candidate.entry.aniListId)
-      // 以「这一场的播出时刻」为准。无法判定（不是同季、终映日异常）时一律保留：
+      // 记录指向别季：以后不必再请求这条 ID，直接跳过（由闸门 3 用 Bangumi 档期兜底）。
+      // 顺手从本次状态表里删掉，免得闸门 3 再校验一次、也免得 `applyAiringSchedule`
+      // 误用别季的逐话时刻。
+      if (state && !this.isSameAniListSeason(state, candidate.entry.broadcastMs)) {
+        this.verdicts.record(candidate.entry, 'anilist-mismatch')
+        if (candidate.entry.aniListId !== null) airing.delete(candidate.entry.aniListId)
+        return true
+      }
+      // 以「这一场的播出时刻」为准。无法判定（终映日异常）时一律保留：
       // 表格里多留一部只是不好看，误删一部会让用户以为没更新。
-      const finished = this.aniListFinished(state, candidate.entry.broadcastMs, now, candidate.atMs)
+      const finished = this.aniListFinished(state, candidate.entry.broadcastMs, now, candidate.atMs, true)
       if (finished !== true) return true
+      this.verdicts.record(candidate.entry, 'anilist-finished', {
+        // 下一场只要晚于末集时刻就必定也已播完，不必再请求 AniList
+        dropAfterMs: this.aniListDropAfterMs(state, candidate.atMs),
+      })
       debugLog(
         '[digest] 剔除 %s：AniList 状态 %s，已播 %s / %s 集，终映 %s',
         candidate.entry.title,
@@ -533,8 +564,9 @@ export class DigestService {
     base: number | null,
     now: number,
     fromMs: number,
+    seasonChecked = false,
   ): boolean | null {
-    if (!state || !this.isSameAniListSeason(state, base)) return null
+    if (!state || (!seasonChecked && !this.isSameAniListSeason(state, base))) return null
     // 还在连载或还没开播，一律不算完结
     if (state.status === 'RELEASING' || state.status === 'NOT_YET_RELEASED') return false
     // 还有没播的一话，说明没完结
@@ -556,6 +588,17 @@ export class DigestService {
     }
 
     return null
+  }
+
+  /** 已确认完结时，下一场从哪个时刻之后可以直接剔除（用于判定缓存） */
+  private aniListDropAfterMs(state: AiringState | undefined, fallback: number): number {
+    if (state?.lastAiredMs !== null && state?.lastAiredMs !== undefined) return state.lastAiredMs
+    if (state?.endDate) {
+      const endMs = Date.parse(`${state.endDate}T00:00:00Z`)
+      if (Number.isFinite(endMs)) return endMs
+    }
+    // 字段不全时退回本次场次：至少之后的场次不会再重复请求
+    return fallback
   }
 
   /**
@@ -615,13 +658,23 @@ export class DigestService {
       debugLog('[digest] 还有 %d 部缺 AniList ID 的条目未处理，留待后续构建', missing.size - pending.length)
     }
 
-    const ids = candidates
-      .map((candidate) => candidate.entry.aniListId)
-      .filter((id): id is number => id !== null)
-    if (!ids.length) return new Map()
+    const ids = new Set<number>()
+    let cachedSkipped = 0
+    for (const candidate of candidates) {
+      const { entry } = candidate
+      if (entry.aniListId === null) continue
+      // 上次已确认这条 AniList 记录指向别季：不再请求，闸门 3 会改用 Bangumi 逐集档期
+      if (this.verdicts.shouldSkipAniList(entry)) {
+        cachedSkipped++
+        continue
+      }
+      ids.add(entry.aniListId)
+    }
+    if (cachedSkipped > 0) debugLog('[digest] 按判定缓存跳过 %d 个 AniList 状态请求', cachedSkipped)
+    if (!ids.size) return new Map()
     await this.airing.ensure()
     try {
-      return await this.airing.resolve(ids, this.config.localize.airingTtlHours / 24, now)
+      return await this.airing.resolve([...ids], this.config.localize.airingTtlHours / 24, now)
     } catch (error) {
       debugLog('[digest] AniList 状态查询失败，本次按逐集档期判定: %s', errorMessage(error))
       return new Map()
@@ -641,11 +694,18 @@ export class DigestService {
     if (!subjects?.size) return candidates
     let dropped = 0
     let skipped = 0
+    let cached = 0
     // 这一段的明细一部一行，用有上限的记录器兜住
     const detail = boundedLog()
     const kept = candidates.filter((candidate) => {
       const id = candidate.entry.bangumiId
       const base = candidate.entry.broadcastMs
+
+      // 上次已确认逐集档期与开播日期对不上：不再判断，直接按本地排期保留
+      if (this.verdicts.shouldSkipEpisodeDates(candidate.entry)) {
+        cached++
+        return true
+      }
 
       // AniList 已经对这部作品表态（同一季）→ 由它说了算，逐集档期不得推翻
       const state = candidate.entry.aniListId === null ? undefined : airing?.get(candidate.entry.aniListId)
@@ -664,6 +724,7 @@ export class DigestService {
       if (apiFirst !== null && Math.abs(base - apiFirst) > STALE_SEASON_GAP_DAYS * 86400000) {
         detail.log('[digest] 剔除 %s: 开播日期 %s 与逐集档期首集 %s 相差 %d 天，上游数据不一致',
           candidate.entry.title, new Date(base).toISOString().slice(0, 10), new Date(apiFirst).toISOString().slice(0, 10), Math.round((base - apiFirst) / 86400000))
+        this.verdicts.record(candidate.entry, 'episode-mismatch')
         dropped++
         return false
       }
@@ -677,11 +738,13 @@ export class DigestService {
       const offsetPeriods = (stated - expectedLast) / period
       if (Math.abs(offsetPeriods) > FINAL_EPISODE_TOLERANCE_PERIODS) {
         detail.log('[digest] 不采信 %s 的逐集档期: 第 %d 集推算 %s，档期给出 %s（差 %s 个周期）', candidate.entry.title, total, new Date(expectedLast).toISOString().slice(0, 10), lastLabel, offsetPeriods.toFixed(1))
+        this.verdicts.markEpisodeUntrusted(candidate.entry)
         return true
       }
       const spanDays = (stated - base) / 86400000
       if (spanDays > (total - 1) * periodDays + FINAL_EPISODE_SPAN_SLACK_DAYS) {
         detail.log('[digest] 不采信 %s 的逐集档期: 跨度 %d 天超出 %d 集的最小跨度', candidate.entry.title, Math.round(spanDays), total)
+        this.verdicts.markEpisodeUntrusted(candidate.entry)
         return true
       }
 
@@ -692,6 +755,7 @@ export class DigestService {
       const candidateDay = Math.floor((candidate.atMs + 9 * 3600000) / 86400000)
       const lastDay = Math.floor(stated / 86400000)
       if (candidateDay - lastDay <= FINAL_EPISODE_DAY_GRACE) return true
+      this.verdicts.record(candidate.entry, 'episode-finished', { dropAfterDay: lastDay })
       detail.log('[digest] 剔除 %s: 末集 %s，本场已在其后 %d 天', candidate.entry.title, lastLabel, candidateDay - lastDay)
       dropped++
       return false
@@ -700,6 +764,7 @@ export class DigestService {
     if (omitted > 0) debugLog('[digest] 另有 %d 条逐集档期明细未展开（同上）', omitted)
     if (dropped > 0) debugLog('[digest] 剔除已播完的作品 %d 部（Bangumi 逐集档期）', dropped)
     if (skipped > 0) debugLog('[digest] %d 部由 AniList 判定，逐集档期未参与', skipped)
+    if (cached > 0) debugLog('[digest] %d 部按判定缓存跳过逐集档期判断', cached)
     return kept
   }
 
@@ -738,6 +803,8 @@ export class DigestService {
     airing?: Map<number, AiringState>,
   ): Promise<Map<number, LocalizeCacheEntry>> {
     const wanted = candidates.filter((candidate) => {
+      // 上次已判定逐集档期不可信 → 闸门 3 不参与，详情不必为此取
+      if (this.verdicts.shouldSkipEpisodeDates(candidate.entry)) return false
       const state = candidate.entry.aniListId === null ? undefined : airing?.get(candidate.entry.aniListId)
       // AniList 已表态（同一季）→ 闸门 3 不参与，详情不必取
       return !(state && this.isSameAniListSeason(state, candidate.entry.broadcastMs))
@@ -939,12 +1006,13 @@ export class DigestService {
     const predicted = this.airingsIn(options)
     debugLog('[digest] %s: 推算 %d 场', kind, predicted.length)
 
-    // ── 闸门 1 + 2：都不需要新增请求，先把大部分候选挡掉 ──
+    // ── 闸门 0 + 1 + 2：都不需要新增请求，先把大部分候选挡掉 ──
     //
-    // bangumi-data 的 `end` 与「近期仍有排期」是纯本地判定，AniList 状态本来就要取，
-    // 因此下面只为幸存者请求 Bangumi 详情。
+    // 判定缓存复用上次的「已完结 / 记录不可信」结论；bangumi-data 的 `end` 与
+    // 「近期仍有排期」是纯本地判定；AniList 状态本来就要取，因此下面只为幸存者请求 Bangumi 详情。
+    const cached = this.dropCachedVerdicts(predicted)
     const following = this.followingKeys(now)
-    const locallyKept = this.dropLocallyFinished(predicted, options.fromMs, following)
+    const locallyKept = this.dropLocallyFinished(cached, options.fromMs, following)
     const airingStates = await this.airingStatesOf(locallyKept, now)
     const survived = this.dropFinishedByAniList(locallyKept, options.fromMs, airingStates)
 
@@ -1289,9 +1357,10 @@ export class DigestService {
       onePerTitle: true,
     }).filter((candidate) => wanted.has(defaultTidOf(candidate.entry) ?? candidate.entry.key))
 
-    // 与 buildAirings 同一套三段闸门：先本地、再 AniList、最后才为幸存者取 Bangumi 逐集档期
+    // 与 buildAirings 同一套闸门：先复用判定缓存与本地依据，再 AniList、最后才为幸存者取 Bangumi 逐集档期
+    const cached = this.dropCachedVerdicts(candidates)
     const following = this.followingKeys(startMs)
-    const locallyKept = this.dropLocallyFinished(candidates, startMs, following)
+    const locallyKept = this.dropLocallyFinished(cached, startMs, following)
     const airingStates = await this.airingStatesOf(locallyKept, now)
     const survived = this.dropFinishedByAniList(locallyKept, startMs, airingStates)
     // 与 `buildAirings` 同一套做法：只为闸门 3 真正要判的作品取详情
@@ -1477,20 +1546,28 @@ export class DigestService {
     }
     if (!entries.size) return []
 
-    const states = await this.resolveAiringStates([...entries.values()], now)
-    return [...entries].filter(([, entry]) => this.isEntryFinished(entry, states, now)).map(([tid]) => tid)
+    // 判定缓存已确认完结的作品不再请求 AniList；其余仍按状态与本地 end 判断
+    const graceNow = now - 86400000
+    const pending = [...entries.values()].filter((entry) => !this.verdicts.shouldDrop(entry, graceNow))
+    const states = await this.resolveAiringStates(pending, now)
+    return [...entries]
+      .filter(([, entry]) => this.verdicts.shouldDrop(entry, graceNow) || this.isEntryFinished(entry, states, now))
+      .map(([tid]) => tid)
   }
 
 
   /** 批量取这批条目对应的 AniList 状态；取不到时返回空表（调用方会退回本地依据） */
   private async resolveAiringStates(entries: IndexEntry[], now: number): Promise<Map<number, AiringState>> {
     if (!this.airing) return new Map()
-    const ids = entries
-      .map((entry) => entry.aniListId)
-      .filter((id): id is number => id !== null)
-    if (!ids.length) return new Map()
+    const ids = new Set<number>()
+    for (const entry of entries) {
+      if (entry.aniListId === null) continue
+      if (this.verdicts.shouldSkipAniList(entry)) continue
+      ids.add(entry.aniListId)
+    }
+    if (!ids.size) return new Map()
     try {
-      return await this.airing.resolve(ids, this.config.localize.airingTtlHours / 24, now)
+      return await this.airing.resolve([...ids], this.config.localize.airingTtlHours / 24, now)
     } catch (error) {
       debugLog('[digest] 取 AniList 状态失败，改用本地依据: %s', errorMessage(error))
       return new Map()
@@ -1567,6 +1644,8 @@ export class DigestService {
     states: Map<number, AiringState>,
     now: number,
   ): boolean {
+    // 判定缓存已经把「已完结」定论过：不必再请求 AniList；沿用现有的一天宽限
+    if (this.verdicts.shouldDrop(entry, now - 86400000)) return true
     const state = entry.aniListId === null ? undefined : states.get(entry.aniListId)
     const finished = this.aniListFinished(state, entry.broadcastMs, now, now - 86400000)
     if (finished !== null) return finished

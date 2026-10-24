@@ -131,9 +131,10 @@ export function apply(ctx: Context, rawConfig: Config) {
   // 立刻开始载入并与插件启动并行：指令与推送在构建前会 await 它，不会出现「索引还没好」的空窗
   const indexReady = index.ensure()
   const localizeReady = digest.localizer.load()
+  const verdictReady = digest.verdicts.load()
   const airingReady = airing.ensure()
   // 免去「未处理的 Promise 拒绝」告警，真实错误在 ready 与构建路径里各自上报
-  Promise.all([indexReady, localizeReady, airingReady]).catch(() => undefined)
+  Promise.all([indexReady, localizeReady, verdictReady, airingReady]).catch(() => undefined)
 
   const dispatcher = new Dispatcher(
     ctx,
@@ -143,7 +144,7 @@ export function apply(ctx: Context, rawConfig: Config) {
   )
 
   const scheduler = new Scheduler(ctx, config, logger, digest, dispatcher, guard, async () => {
-    await digest.localizer.save()
+    await Promise.all([digest.localizer.save(), digest.verdicts.save()])
     // 顺手把已完结的订阅清掉；`pruneFinishedSubscriptions` 自己按天去重
     await digest.pruneFinishedSubscriptions().catch((error) => {
       logger.debug('[lifecycle] 清理已完结订阅失败: %s', errorMessage(error))
@@ -157,7 +158,7 @@ export function apply(ctx: Context, rawConfig: Config) {
   ctx.on('ready', async () => {
     try {
       renderer.init()
-      await Promise.all([localizeReady, indexReady])
+      await Promise.all([localizeReady, indexReady, verdictReady])
       const anyPushEnabled = config.push.dailyEnabled
         || config.push.nightEnabled
         || config.push.weeklyEnabled
@@ -182,9 +183,14 @@ export function apply(ctx: Context, rawConfig: Config) {
 
   ctx.on('dispose', async () => {
     scheduler.stop()
-    await digest.localizer.save().catch((error) => {
-      logger.debug('[lifecycle] 保存本地化缓存失败: %s', errorMessage(error))
-    })
+    await Promise.all([
+      digest.localizer.save().catch((error) => {
+        logger.debug('[lifecycle] 保存本地化缓存失败: %s', errorMessage(error))
+      }),
+      digest.verdicts.save().catch((error) => {
+        logger.debug('[lifecycle] 保存判定缓存失败: %s', errorMessage(error))
+      }),
+    ])
   })
 }
 
