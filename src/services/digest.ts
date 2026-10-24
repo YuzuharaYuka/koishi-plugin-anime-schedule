@@ -1600,20 +1600,40 @@ export class DigestService {
     })
   }
 
+  /** 按条目 ID 批量解析作品名；订阅列表一次取完，避免逐条串行请求 */
+  async resolveSubscriptionNames(tids: string[]): Promise<Map<string, string | null>> {
+    await this.prepare()
+    const result = new Map<string, string | null>()
+    const entries = new Map<string, IndexEntry>()
+    const idByTid = new Map<string, number>()
+    for (const tid of new Set(tids)) {
+      const matched = BGM_TID_RE.exec(tid) ?? BGM_ID_RE.exec(tid)
+      if (!matched) {
+        result.set(tid, null)
+        continue
+      }
+      const id = Number(matched[1])
+      const entry = this.index.bySubjectId(id)
+      if (!entry) {
+        result.set(tid, null)
+        continue
+      }
+      entries.set(tid, entry)
+      idByTid.set(tid, id)
+    }
+    const subjects = await this.localizer.localizeByIds([...new Set(idByTid.values())], false)
+    for (const [tid, entry] of entries) {
+      result.set(tid, this.toItem(
+        { entry, atMs: this.nextAirMs(entry, Date.now()), episode: 1 },
+        subjects.get(idByTid.get(tid)!),
+      ).name)
+    }
+    return result
+  }
+
   /** 按条目 ID 解析作品名；同时接受 `253104` 与 `bgm:253104` 两种写法 */
   async resolveSubscriptionName(tid: string): Promise<string | null> {
-    await this.prepare()
-    const matched = BGM_TID_RE.exec(tid) ?? BGM_ID_RE.exec(tid)
-    if (!matched) return null
-    const id = Number(matched[1])
-    const entry = this.index.bySubjectId(id)
-    if (!entry) return null
-    // 只是为了拿一个展示用的名字，不需要逐集档期
-    const subjects = await this.localizer.localizeByIds([id])
-    return this.toItem(
-      { entry, atMs: this.nextAirMs(entry, Date.now()), episode: 1 },
-      subjects.get(id),
-    ).name
+    return (await this.resolveSubscriptionNames([tid])).get(tid) ?? null
   }
 
   // #endregion

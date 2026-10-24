@@ -43,12 +43,19 @@ function errorName(error: unknown): string {
   return ''
 }
 
-/** 读取 HTTP 错误的状态码，取不到时返回 null */
+/** 读取 HTTP 错误的状态码，取不到时返回 null。兼容 `response.status`、直接 `status` 与 `cause` 链 */
 export function errorStatus(error: unknown): number | null {
-  if (!error || typeof error !== 'object') return null
-  const response = (error as { response?: { status?: unknown } }).response
-  const status = response?.status
-  return typeof status === 'number' ? status : null
+  let current: unknown = error
+  for (let depth = 0; depth < MAX_CAUSE_DEPTH; depth++) {
+    if (!current || typeof current !== 'object') break
+    const direct = (current as { status?: unknown }).status
+    if (typeof direct === 'number') return direct
+    const response = (current as { response?: { status?: unknown } }).response
+    const status = response?.status
+    if (typeof status === 'number') return status
+    current = (current as { cause?: unknown }).cause
+  }
+  return null
 }
 
 /**

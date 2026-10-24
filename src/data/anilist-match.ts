@@ -88,7 +88,10 @@ export function matchByTitle(target: MatchTarget, candidates: MatchCandidate[]):
 
     const startMs = startMsOf(candidate)
     const dayGap = startMs !== null && beginMs !== null ? Math.abs(startMs - beginMs) / DAY : null
-    if (dayGap !== null && dayGap > MAX_DAY_GAP) continue
+    // 标题相等只说明是同一部作品，不能排除同名续作；首播日期缺失时无法校验，直接放弃，
+    // 否则「第 2 期」这类同名条目会被错配到前一季。
+    if (dayGap === null) continue
+    if (dayGap > MAX_DAY_GAP) continue
 
     const nodes = (candidate.airingSchedule?.nodes ?? []).filter((node) => typeof node.airingAt === 'number')
     const first = nodes.length

@@ -421,13 +421,9 @@ export async function commandSubList(deps: HandlerContext, session: Session): Pr
     const upcoming = await digest.upcomingAirings(tids, 31)
     // `upcomingAirings` 会滤掉已播完的作品，故单独查询一次用于标注「已播完」
     const finished = new Set(await digest.finishedSubscriptionTids(tids))
-    const names = new Map<string, string>()
+    const names = await digest.resolveSubscriptionNames(tids)
     const nextOf = new Map<string, DigestItem>()
     const todayOf = new Map<string, DigestItem>()
-    for (const row of rows) {
-      const resolved = await digest.resolveSubscriptionName(row.tid)
-      names.set(row.tid, resolved ?? row.title ?? row.tid)
-    }
     for (const item of upcoming) {
       if (!nextOf.has(item.tid)) nextOf.set(item.tid, item)
       if (item.date === date && !todayOf.has(item.tid)) todayOf.set(item.tid, item)
@@ -543,7 +539,8 @@ export async function commandSubClear(deps: HandlerContext, session: Session): P
 /** 查询订阅作品未来若干天的播出计划 */
 export async function commandNext(deps: HandlerContext, session: Session, daysText?: string): Promise<string | void> {
   const { config, digest } = deps
-  const days = clamp(Number.parseInt(daysText ?? '7', 10) || 7, 1, 31)
+  const parsed = Number.parseInt(daysText ?? '7', 10)
+  const days = clamp(Number.isFinite(parsed) ? parsed : 7, 1, 31)
   try {
     const rows = await digest.listSubscriptions(platformOf(session), channelOf(session))
     if (!rows.length) return RESPONSES.noSubscription
@@ -590,7 +587,7 @@ async function togglePush(
   kindText: string | undefined,
   enabled: boolean,
 ): Promise<string | void> {
-  const { config, digest } = deps
+  const { ctx, config, digest } = deps
   if (!session.guildId) return RESPONSES.needGuild
 
   const raw = (kindText ?? '').trim().toLowerCase()
@@ -613,6 +610,12 @@ async function togglePush(
         seasonEnabled: false,
         enabled: true,
       })
+    } else if (existing.botId !== session.selfId || existing.guildId !== session.guildId) {
+      // 机器人换号或频道迁移后，开播提醒要能找到当前机器人；顺手刷新归属信息
+      await ctx.database.set('anime_channel', {
+        platform: platformOf(session),
+        channelId: channelOf(session),
+      }, { botId: session.selfId, guildId: session.guildId })
     }
     await digest.setKinds(
       platformOf(session),
@@ -642,11 +645,13 @@ export async function commandStatus(deps: HandlerContext, session: Session): Pro
   try {
     const channel = await digest.getChannel(platformOf(session), channelOf(session))
     const subscriptions = await digest.listSubscriptions(platformOf(session), channelOf(session))
+    const dayStart = getDayStartMs(today(digest.timeZone), digest.timeZone)
+    // 只取今天的记录；以前是全量取回再在内存里过滤，推送记录攒久后会越来越慢
     const dispatches = await ctx.database.get('anime_dispatch', {
       platform: platformOf(session),
       channelId: channelOf(session),
+      dispatchedAt: { $gte: dayStart, $lt: dayStart + 86400000 },
     })
-    const dayStart = getDayStartMs(today(digest.timeZone), digest.timeZone)
     const formatText = config.output.format === 'image'
       ? `图片 (${config.output.layout === 'list' ? '卡片列表' : '时间表'})`
       : `纯文本${config.output.useForward ? ' (合并转发)' : ''}`
@@ -662,7 +667,7 @@ export async function commandStatus(deps: HandlerContext, session: Session): Pro
       `订阅番剧: ${subscriptions.length} 部${config.subscription.maxPerChannel > 0 ? ` (上限 ${config.subscription.maxPerChannel})` : ''}`,
       `开播提醒: ${config.push.updateReminderEnabled ? `开，提前 ${config.push.updateLookaheadMinutes} 分钟` : '关'}`,
       // 按记录时间统计：`sub`（开播提醒）的去重键里带的是时刻而不是日期，不能靠键判断
-      `今日推送记录: ${dispatches.filter((row) => row.dispatchedAt >= dayStart && row.dispatchedAt < dayStart + 86400000).length} 条`,
+      `今日推送记录: ${dispatches.length} 条`,
     ].join('\n')
   } catch (error) {
     deps.logger.warn('[command] 查询状态失败:', error)

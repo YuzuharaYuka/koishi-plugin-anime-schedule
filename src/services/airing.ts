@@ -115,8 +115,22 @@ export class AiringStatusService {
     return Promise.resolve()
   }
 
-  private isFresh(entry: AiringState, ttlDays: number): boolean {
-    return Date.now() - entry.cachedAt < ttlDays * 24 * 60 * 60 * 1000
+  private isFresh(entry: AiringState, ttlDays: number, now = Date.now()): boolean {
+    return now - entry.cachedAt < Math.max(0, ttlDays) * 24 * 60 * 60 * 1000
+  }
+
+  /**
+   * 标题缓存键。
+   *
+   * 不能只用折叠标题：`normalizeTitle` 会删掉「第 2 期」这类季别，不同季的同名作品
+   * 会命中同一个 ID。把开播日期（取 `beginMs`，缺失时用 `broadcastMs`）按天拼进去，
+   * 同名但不同季/不同年的作品就能区分开。
+   */
+  private titleKey(target: MatchTarget): string {
+    const title = normalizeTitle(target.title)
+    if (!title) return ''
+    const anchor = target.beginMs ?? target.broadcastMs ?? null
+    return anchor === null ? title : `${title}@${Math.floor(anchor / 86400000)}`
   }
 
   /**
@@ -125,7 +139,7 @@ export class AiringStatusService {
    * 校验交给 `matchByTitle`：标题相等 + 首播日期相近，缺一不可。
    */
   async resolveByTitle(target: MatchTarget): Promise<number | null> {
-    const key = normalizeTitle(target.title)
+    const key = this.titleKey(target)
     if (!key) return null
     const cached = this.idByTitle.get(key)
     if (cached !== undefined) return cached
@@ -163,7 +177,10 @@ export class AiringStatusService {
       const payload = unwrapPayload(raw) as { data?: { Page?: { media?: MatchCandidate[] } } } | null
       return payload?.data?.Page?.media ?? []
     } catch (error) {
-      return this.handleRequestError(error) ? null : []
+      // 只有「成功响应但没有候选」才是 []；网络/解析失败必须返回 null，
+      // 否则会被 resolveByTitle 当成「确定搜不到」永久写入 idByTitle。
+      this.handleRequestError(error)
+      return null
     }
   }
 
@@ -188,7 +205,7 @@ export class AiringStatusService {
       }
       // 过期条目先返回旧值，避免一次请求失败就没有数据可用
       result.set(id, cached)
-      if (!this.isFresh(cached, ttlDays)) wanted.push(id)
+      if (!this.isFresh(cached, ttlDays, now)) wanted.push(id)
     }
     if (!wanted.length) return result
 

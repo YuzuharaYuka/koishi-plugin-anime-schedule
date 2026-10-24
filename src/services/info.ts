@@ -482,10 +482,15 @@ export class InfoService {
  */
 function flattenSummary(summary?: string): string {
   if (!summary) return ''
-  return summary
+  const lines = summary
     .replace(/\r\n?/g, '\n')
     .split('\n')
     .map((line) => line.trim())
     .filter(Boolean)
-    .join('')
+  // 中文/日文换行处不需要空格；英文单词在源文本里被折行时则需要补一个，
+  // 否则「the story」会被拼成「thestory」。
+  return lines.reduce((text, line) => {
+    if (!text) return line
+    return `${text}${/[!-~]$/.test(text) && /^[A-Za-z0-9]/.test(line) ? ' ' : ''}${line}`
+  }, '')
 }

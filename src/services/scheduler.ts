@@ -72,7 +72,8 @@ export class Scheduler {
     try {
       const due = this.dueKinds(now)
       const reminder = this.config.push.updateReminderEnabled && this.reminderDue(now)
-      // 没有到期的推送就不碰数据库：清理与落盘每天各跑一次即可，否则 tick 每分钟一次 DELETE
+      // 没有到期的推送就不碰数据库：清理与落盘只在真正有推送/提醒的轮次里跑。
+      // 提醒默认每 10 分钟轮询一次，因此缓存落盘与过期记录清理也随之变成约 10 分钟一次。
       if (!due.length && !reminder) return
       for (const kind of due) await this.pushKind(kind, now)
       if (reminder) await this.pushUpdateReminders(now)
@@ -216,7 +217,9 @@ export class Scheduler {
       : kind === 'night' ? 'nightEnabled'
         : kind === 'weekly' ? 'weeklyEnabled'
           : 'seasonEnabled'
-    return this.ctx.database.get('anime_channel', { [field]: true } as never)
+    const rows = await this.ctx.database.get('anime_channel', { [field]: true } as never)
+    // `enabled` 是后加的字段，老数据的 null 不能被当成「已关闭」；显式 false 才跳过。
+    return rows.filter((row) => row.enabled !== false)
   }
 
   /**

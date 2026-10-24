@@ -75,6 +75,10 @@ export class Localizer {
   private loadPromise: Promise<void> | null = null
   private dirty = false
   private flushTimer: (() => void) | null = null
+  /** 正在进行的写盘；并发调用共享同一个 Promise，避免两个 tmp 文件互相覆盖 */
+  private flushing: Promise<void> | null = null
+  /** 上一次写盘是否失败：失败后不立即重排定时器，避免磁盘故障时每 3 秒刷一条警告 */
+  private writeFailed = false
   /** 本次构建里评分过期、等出图之后在后台补取的条目 */
   private readonly pendingScores = new Set<number>()
   private refreshingScores = false
@@ -134,9 +138,25 @@ export class Localizer {
     return this.loadPromise
   }
 
-  /** 把缓存写回磁盘，写入前按时间淘汰最旧的一半 */
-  private async flush(): Promise<void> {
-    if (!this.dirty) return
+  /**
+   * 把缓存写回磁盘。
+   *
+   * 同一时刻只允许一个写盘：`save()` 与 3 秒防抖可能同时触发，两个写操作会争用同一个
+   * `.tmp` 文件。`dirty` 只在写入成功后才保持 `false`；失败时重新置位，等下一次
+   * `scheduleFlush()` 或 `save()` 再试，避免一次磁盘抖动就让本次更新永久丢失。
+   */
+  private flush(): Promise<void> {
+    if (this.flushing) return this.flushing
+    if (!this.dirty) return Promise.resolve()
+    this.flushing = this.writeCache().finally(() => {
+      this.flushing = null
+      // 写盘快照之后又有新条目：补一次合并写盘；失败时不自动重排，等下一次 save/schedule
+      if (this.dirty && !this.writeFailed) this.scheduleFlush()
+    })
+    return this.flushing
+  }
+
+  private async writeCache(): Promise<void> {
     this.dirty = false
     if (this.memory.size > LOCALIZE_CACHE_MAX_ENTRIES) {
       const sorted = [...this.memory.entries()].sort((a, b) => a[1].cachedAt - b[1].cachedAt)
@@ -152,7 +172,11 @@ export class Localizer {
       await fs.mkdir(dirname(this.cachePath), { recursive: true })
       await fs.writeFile(temp, JSON.stringify(payload), 'utf8')
       await fs.rename(temp, this.cachePath)
+      this.writeFailed = false
     } catch (error) {
+      // 写入期间可能又有新条目进来；失败后也保持 dirty，交给下一次写盘重试
+      this.dirty = true
+      this.writeFailed = true
       this.logger.warn('[localize] 写入本地化缓存失败:', error)
       await fs.rm(temp, { force: true }).catch(() => undefined)
     }
@@ -175,6 +199,8 @@ export class Localizer {
       this.flushTimer = null
     }
     await this.flush()
+    // 写盘期间又产生了新条目：等当前写盘结束后再补一次
+    if (this.dirty && !this.flushing) await this.flush()
   }
 
   /**
@@ -222,8 +248,10 @@ export class Localizer {
       // 过期条目也先返回，避免一次请求失败就让整张表掉封面
       result.set(id, cached)
       if (this.needsScoreRefresh(cached)) this.pendingScores.add(id)
-      // 只有展示数据过期、或这次要档期而缓存里没有档期时才阻塞构建
-      if (!this.isDisplayFresh(cached) || (wantEpisodeTimes && cached.hasEpisodeTimes === false)) {
+      // 只有展示数据过期、或这次要档期而缓存里没有档期时才阻塞构建。
+      // 404 占位记录带 `hasEpisodeTimes:false`，但它的 TTL 内不该反复重试，由 isDisplayFresh 决定。
+      if (!this.isDisplayFresh(cached)
+        || (wantEpisodeTimes && !cached.missing && cached.hasEpisodeTimes === false)) {
         wanted.push(id)
         previous.set(id, cached)
       }
@@ -237,7 +265,7 @@ export class Localizer {
       //
       // 已经取过档期的条目**不重复取**——评分每天刷新，而档期是另一笔请求，跟着一起重发
       // 会让请求量凭空翻倍。只有「没取过」或「这次确实缺它」才补。
-      const needsTimes = wantEpisodeTimes && !(stale && stale.hasEpisodeTimes !== false)
+      const needsTimes = wantEpisodeTimes && !(stale && stale.hasEpisodeTimes === true)
       const subject = await this.fetchSubject(id)
       const times = needsTimes && subject && resolveEpisodeTotal(subject)
         ? await this.fetchEpisodeTimes(id)
@@ -316,17 +344,21 @@ export class Localizer {
       if (!stale || !this.needsScoreRefresh(stale)) return
       const subject = await this.fetchSubject(id)
       if (!subject) return
+      // fetchSubject 是 await 点：期间 `localizeByIds` 可能刚写入更完整的档期字段。
+      // 这里必须基于「最新的一份」合并，不能拿请求前的快照整体覆盖。
+      const current = this.memory.get(id)
+      if (!current || current.missing || !this.needsScoreRefresh(current)) return
       ok++
       this.memory.set(id, {
-        ...stale,
+        ...current,
         title: subject.name_cn?.trim() || subject.name,
         coverUrl: subject.images?.large ?? subject.images?.common ?? '',
         score: computeScore(subject.rating),
         ratingTotal: typeof subject.rating?.total === 'number' ? subject.rating.total : null,
         totalEpisodes: resolveEpisodeTotal(subject),
-        hasEpisodeTimes: stale.hasEpisodeTimes,
-        firstAirMs: stale.firstAirMs,
-        lastAirMs: stale.lastAirMs,
+        hasEpisodeTimes: current.hasEpisodeTimes,
+        firstAirMs: current.firstAirMs,
+        lastAirMs: current.lastAirMs,
         cachedAt: Date.now(),
         scoreCachedAt: Date.now(),
       })
