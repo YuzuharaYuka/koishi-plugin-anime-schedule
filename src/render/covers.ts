@@ -6,7 +6,6 @@ import type { Context, Logger } from 'koishi'
 import {
   COVER_CACHE_DIR,
   COVER_CACHE_MAX_FILES,
-  COVER_CACHE_TTL_MS,
   COVER_MAX_BYTES,
   COVER_MEMORY_MAX_BYTES,
   COVER_TIMEOUT_MS,
@@ -326,7 +325,7 @@ export class CoverStore {
     try {
       const stat = await fs.stat(path)
       const ttl = this.cacheDays * 24 * 60 * 60 * 1000
-      if (Date.now() - stat.mtimeMs > Math.min(ttl, COVER_CACHE_TTL_MS)) return null
+      if (Date.now() - stat.mtimeMs > ttl) return null
       return await fs.readFile(path)
     } catch {
       return null
@@ -358,7 +357,7 @@ export class CoverStore {
   async prune(): Promise<void> {
     if (!this.enabled) return
     try {
-      const ttl = Math.min(this.cacheDays * 24 * 60 * 60 * 1000, COVER_CACHE_TTL_MS)
+      const ttl = this.cacheDays * 24 * 60 * 60 * 1000
       const files: { path: string; mtimeMs: number }[] = []
       const buckets = await fs.readdir(this.cacheRoot, { withFileTypes: true })
       for (const bucket of buckets) {

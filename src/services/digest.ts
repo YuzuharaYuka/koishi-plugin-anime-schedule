@@ -244,6 +244,13 @@ export class DigestService {
     const fromAniList = new Map<string, { entry: IndexEntry; schedule: ScheduledEpisode[] }>()
     /** 被 AniList 明确否定、连推算结果也不该保留的作品键 */
     const suppressed = new Set<string>()
+    /**
+     * AniList 已经明确给出时刻的话数。
+     *
+     * 逐話表没覆盖本窗口时仍要记录：它可能刚好包含「本窗口内的这一话更晚播出」的场次。
+     * 例如 00:00 场在深夜档窗口内、AniList 说同一话 16:00 才播，深夜档不能按 00:00 再记一次。
+     */
+    const knownEpisodes = new Map<string, Map<number, number>>()
     const predicted: AirCandidate[] = []
     let stale = 0
     for (const candidate of candidates) {
@@ -251,6 +258,11 @@ export class DigestService {
       if (candidate.entry.aniListId === null || fromAniList.has(key)) continue
       const state = states.get(candidate.entry.aniListId)
       if (!state) continue
+
+      const known = new Map<number, number>()
+      for (const episode of state.schedule) known.set(episode.episode, episode.atMs)
+      if (state.nextEpisode) known.set(state.nextEpisode.episode, state.nextEpisode.atMs)
+      knownEpisodes.set(key, known)
 
       // ⓪ **首播时刻以 AniList 为准**：AniList 说第 1 话在窗口之后，本窗口内就一场都没有，连推算结果也要丢掉。
       //
@@ -291,7 +303,7 @@ export class DigestService {
         stale++
         const last = state.schedule[state.schedule.length - 1]
         debugLog(
-          '[digest] %s 的 AniList 排期未覆盖 %s ~ %s（逐话表最新 %s），改用推算',
+          '[digest] %s 的 AniList 排期未覆盖 %s ~ %s（逐话表最新 %s），改用推算（已给出时刻的话数除外）',
           candidate.entry.title,
           new Date(options.fromMs).toISOString().slice(0, 10),
           new Date(options.toMs).toISOString().slice(0, 10),
@@ -318,6 +330,16 @@ export class DigestService {
       if (fromAniList.has(candidate.entry.key)) continue
       // 被 AniList 明确否定首播的作品连推算结果也不保留
       if (suppressed.has(candidate.entry.key)) continue
+      const knownAt = knownEpisodes.get(candidate.entry.key)?.get(candidate.episode)
+      if (knownAt !== undefined && Math.abs(knownAt - candidate.atMs) > 60000) {
+        debugLog(
+          '[digest] 舍弃 %s 第 %d 话的推算场次：AniList 给出的时刻是 %s',
+          candidate.entry.title,
+          candidate.episode,
+          new Date(knownAt).toISOString().slice(0, 16),
+        )
+        continue
+      }
       predicted.push(candidate)
     }
 

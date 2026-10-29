@@ -26,19 +26,31 @@ export function registerFonts(requestedFamily: string, logger: Logger): void {
   if (initialized) return
   initialized = true
 
-  regularFamily = requestedFamily || DEFAULT_FONT_FAMILY
-  boldFamily = `${regularFamily} Bold`
+  const requested = requestedFamily?.trim() ?? ''
+  const custom = requested !== '' && requested !== DEFAULT_FONT_FAMILY && GlobalFonts.has(requested)
 
-  if (!registerFirst(FONT_CANDIDATES, regularFamily)) {
-    logger.warn(
-      '[render] 未找到可用的中文字体，图片中的中文会显示为方块。'
-      + '请安装 Noto Sans CJK，或确认系统字体目录中存在 msyh.ttc / simhei.ttf',
-    )
-  }
+  if (custom) {
+    regularFamily = requested
+    // 系统字体通常不提供独立的“Bold”族名，直接由 canvas 选择粗体字重
+    boldFamily = GlobalFonts.has(`${requested} Bold`) ? `${requested} Bold` : requested
+  } else {
+    regularFamily = DEFAULT_FONT_FAMILY
+    if (requested !== '' && requested !== DEFAULT_FONT_FAMILY) {
+      logger.warn('[render] 未找到字体 %s，改用自动选择的中文字体', requested)
+    }
 
-  if (!registerFirst(BOLD_FONT_CANDIDATES, boldFamily)) {
-    boldFamily = regularFamily
-    logger.debug('[render] 未找到独立的粗体字体，粗体将由常规字体合成')
+    if (!registerFirst(FONT_CANDIDATES, regularFamily)) {
+      logger.warn(
+        '[render] 未找到可用的中文字体，图片中的中文会显示为方块。'
+        + '请安装 Noto Sans CJK，或确认系统字体目录中存在 msyh.ttc / simhei.ttf',
+      )
+    }
+
+    boldFamily = `${regularFamily} Bold`
+    if (!registerFirst(BOLD_FONT_CANDIDATES, boldFamily)) {
+      boldFamily = regularFamily
+      logger.debug('[render] 未找到独立的粗体字体，粗体将由常规字体合成')
+    }
   }
 
   const fallbacks = registerFallbacks()

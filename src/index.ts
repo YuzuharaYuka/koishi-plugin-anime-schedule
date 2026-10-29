@@ -42,35 +42,35 @@ export const inject = { required: ['database', 'http'] }
 export { ConfigSchema as Config }
 
 export const usage = `
-番剧更新表与订阅提醒。作品清单来自 [bangumi-data](https://github.com/bangumi-data/bangumi-data)，
-中文标题、封面与评分取自 [Bangumi](https://bgm.tv/)，排期与播出状态查询 [AniList](https://anilist.co/)
+番剧更新表与订阅提醒。作品清单来自 [bangumi-data](https://github.com/bangumi-data/bangumi-data)，中文标题、封面与评分来自 [Bangumi](https://bgm.tv/)，排期与播出状态查询 [AniList](https://anilist.co/)。
 
-在群聊里执行一次 \`anime.on\` 后开始接收定时推送
+在群聊里执行一次 \`anime.on\` 后开始接收定时推送。
 
 | 指令 | 别名 | 说明 |
 | :--- | :--- | :--- |
-| \`anime.today\` | 今日新番 | 今日更新表，\`-o -1\` 看前一天 |
+| \`anime\` | 番剧 / 新番 | 今日更新表 |
+| \`anime.today [-o 偏移]\` | 今日新番 | 今日更新；\`-o -1\` 看昨天 |
 | \`anime.night\` | 深夜新番 | 今晚 21:00 至次日 06:00 |
 | \`anime.week\` | 本周新番 | 今天起七天 |
-| \`anime.season [季度]\` | 本季新番 | 本季一览，\`-o -1\` 看上一季 |
-| \`anime.search <关键词>\` | 番剧搜索 | 中日英文标题都能搜 |
-| \`anime.info <ID 或序号>\` | 番剧详情 | 简介、连载状态、话数、评分与逐集进度 |
-| \`anime.sub <ID>\` | 番剧订阅 | 用 Bangumi 条目 ID 订阅 |
-| \`anime.remove <ID>\` | 取消订阅 | 也接受订阅列表里的序号 |
-| \`anime.list\` | 订阅列表 | 本群订阅的番剧 |
-| \`anime.clear\` | 清空订阅 | 清空本群订阅 |
-| \`anime.next [天数]\` | 追番计划 | 订阅作品未来排期 |
-| \`anime.on\` / \`anime.off\` | 开启推送 / 关闭推送 | 本群定时推送开关 |
-| \`anime.status\` | 推送状态 | 本群推送状态 |
-| \`anime.push <类型>\` | 立即推送 | 手动发一次推送 |
+| \`anime.season [季度]\` | 本季新番 | 本季动画；\`-o -1\` 看上一季 |
+| \`anime.search <关键词>\` | 番剧搜索 | 中日英文标题均可 |
+| \`anime.info <ID、序号或关键词>\` | 番剧详情 | 简介、状态、话数、评分与逐集进度 |
+| \`anime.sub <ID>\` | 番剧订阅 | 使用 Bangumi 条目 ID |
+| \`anime.remove <ID 或序号>\` | 退订 | 也接受订阅列表中的序号 |
+| \`anime.list\` | 订阅列表 | 本群已订阅作品 |
+| \`anime.clear\` | 清空订阅 | 删除本群全部订阅 |
+| \`anime.next [天数]\` | 追番计划 | 未来 1 至 31 天的排期 |
+| \`anime.on / anime.off [类型]\` | 开启推送 / 关闭推送 | 可只开关某一类推送 |
+| \`anime.status\` | 推送状态 | 查看本群推送设置 |
+| \`anime.push <类型>\` | 立即推送 | 手动发送一次 |
 
-每日、深夜档与本周只列还在播的作品；本季表收录该季首播的全部 TV / WEB 动画
+推送类型：\`daily\`、\`night\`、\`weekly\`、\`season\`，发送时间在控制台配置。
 
-卡片上的 \`ID:xxx\` 可直接用于订阅
+每日、深夜与本周只显示仍在播出的作品；本季表收录该季首播的全部 TV / WEB 动画。
 
-\`anime.info\` 给条目 ID 或搜索结果序号时出单部详情，给关键词时搜到几部出几部信息，如 \`anime.info 400602\`、\`anime.info 3\`、\`anime.info 芙莉莲\`
+卡片上的 \`ID:xxx\` 可直接用于订阅；\`anime.info\` 也支持搜索结果序号或关键词。
 
-取不到封面或评分时，请尝试安装启用 **[proxy-agent](/market/?keyword=proxy-agent)** 并配置代理
+取不到封面或评分时，可安装并启用 **[proxy-agent](/market/?keyword=proxy-agent)** 配置代理。
 `
 
 const logger = new Logger(PLUGIN_NAME)
@@ -117,7 +117,7 @@ export function apply(ctx: Context, rawConfig: Config) {
   if (config.advanced.debug) logger.info('[lifecycle] 调试日志已开启，logger 级别已提到 debug')
 
   // 出网客户端：Bangumi 接口与图床在国内无法直连，代理在这里统一生效
-  const http = new HttpClient(ctx, logger, config.advanced.retries)
+  const http = new HttpClient(ctx, logger, config.advanced.retries, config.advanced.requestTimeout * 1000)
   // bangumi-data 索引层：作品清单、中文译名、Bangumi 条目 ID 与周期时刻都来自这里
   const index = new BangumiDataIndex(ctx, logger, http)
   // AniList 播出状态：判断「这部番是否还在播」的权威依据

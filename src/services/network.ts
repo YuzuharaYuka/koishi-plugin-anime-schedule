@@ -64,6 +64,8 @@ export class HttpClient {
     private logger: Logger,
     /** 失败后的最大重试次数，见 `advanced.retries` */
     private retries = 1,
+    /** 未单独指定时的请求超时（毫秒），见 `advanced.requestTimeout` */
+    private timeout = 0,
   ) {}
 
   /** Koishi http 服务上配置的代理地址（未启用 proxy-agent 插件时为空） */
@@ -94,7 +96,7 @@ export class HttpClient {
     if (isTimeoutError(error, undefined, detail)) {
       this.logger.warn(
         '[network] 出网请求超时（%s）。浏览器能打开不代表 Node 侧能及时完成：'
-        + '浏览器有更长的超时与 IPv4/IPv6 竞速回退。可调大「单次请求超时」，或启用 '
+        + '浏览器有更长的超时与 IPv4/IPv6 竞速回退。可调大「默认请求超时」，或启用 '
         + '`@koishijs/plugin-proxy-agent` 走代理。',
         detail,
       )
@@ -143,7 +145,7 @@ export class HttpClient {
     const config = {
       method: method.toUpperCase() as 'GET' | 'POST',
       data: options.body,
-      timeout: options.timeout,
+      timeout: options.timeout ?? (this.timeout > 0 ? this.timeout : undefined),
       headers: { 'User-Agent': this.userAgent, Accept: 'application/json', ...options.headers },
       responseType: options.responseType,
     }

@@ -175,9 +175,8 @@ export const COVER_CONCURRENCY = 8
 export const COVER_TIMEOUT_MS = 8000
 export const COVER_MAX_BYTES = 4 * 1024 * 1024
 
-/** 封面磁盘缓存目录（相对于 ctx.baseDir）与有效期 */
+/** 封面磁盘缓存目录（相对于 ctx.baseDir）与数量上限 */
 export const COVER_CACHE_DIR = ['data', 'anime-schedule', 'covers']
-export const COVER_CACHE_TTL_MS = 21 * 24 * 60 * 60 * 1000
 export const COVER_CACHE_MAX_FILES = 1200
 
 /**
@@ -259,7 +258,7 @@ export const BUILD_CACHE_TTL_MS = 5 * 60 * 1000
 /** 构建结果同时留存几份（日/深夜/周/季 × 少量偏移），超出丢最早的一份 */
 export const BUILD_CACHE_MAX_ENTRIES = 16
 
-/** 注册到 canvas 的字体族名，与 config.render.fontFamily 的默认值保持一致 */
+/** 默认字体别名；实际字体文件由 registerFonts 从系统字体中加载 */
 export const DEFAULT_FONT_FAMILY = 'Anime Schedule Sans'
 
 /**

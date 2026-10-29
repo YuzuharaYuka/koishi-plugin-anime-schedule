@@ -34,9 +34,9 @@ export interface Config {
   }
 
   content: {
-    /** 单次推送最多展示的作品数，0 表示不限制 */
+    /** 单个番组表最多展示的作品数，0 表示不限制 */
     maxItems: number
-    /** 超长期连载番的话数阈值，0 表示不过滤 */
+    /** 当前话数达到该值的作品不展示，0 表示不过滤 */
     longRunningThreshold: number
   }
 
@@ -54,11 +54,11 @@ export interface Config {
   localize: {
     enabled: boolean
     titleStyle: TitleStyle
-    /** 标题与封面的缓存天数 */
+    /** 标题与封面地址的缓存天数 */
     cacheTtlDays: number
-    /** 评分与评价人数的缓存小时数 */
+    /** 评分与评价人数的刷新间隔（小时） */
     scoreTtlHours: number
-    /** 播出状态（是否已完结）的缓存有效期，单位小时 */
+    /** AniList 播出状态的缓存有效期，单位小时 */
     airingTtlHours: number
   }
 
@@ -73,7 +73,7 @@ export interface Config {
   }
 
   subscription: {
-    /** 单个群最多订阅的番剧数量，0 表示不限制 */
+    /** 单个群或私聊最多订阅的番剧数量，0 表示不限制 */
     maxPerChannel: number
   }
 
@@ -105,120 +105,108 @@ export const Config: Schema<Config> = Schema.intersect([
       Schema.const('Asia/Taipei').description('Asia/Taipei (UTC+8)'),
       Schema.const('UTC').description('UTC'),
     ])
-      .description('时刻与日期换算时区')
+      .description('日期与时刻的换算时区')
       .default('Asia/Shanghai'),
     locale: Schema.union([
       Schema.const('zh-CN').description('简体中文'),
       Schema.const('ja-JP').description('日本語'),
       Schema.const('en-US').description('English'),
     ])
-      .description('界面语言')
+      .description('推送、列表与详情的文案语言')
       .default('zh-CN'),
-  }),
+  }).description('基本'),
 
   Schema.object({
     push: Schema.object({
       dailyEnabled: Schema.boolean().description('每日更新表').default(true),
-      dailyTime: Schema.string().pattern(TIME_PATTERN).description('推送时刻').default('08:00'),
+      nightEnabled: Schema.boolean().description('深夜档（21:00–06:00）').default(true),
+      weeklyEnabled: Schema.boolean().description('本周更新表').default(true),
+      seasonEnabled: Schema.boolean().description('本季新番表').default(true),
+      updateReminderEnabled: Schema.boolean().description('订阅开播提醒').default(true),
+
+      dailyTime: Schema.string().pattern(TIME_PATTERN).description('每日推送时刻（HH:mm）').default('08:00'),
+      nightTime: Schema.string().pattern(TIME_PATTERN).description('深夜档推送时刻（HH:mm）').default('21:00'),
+      weeklyTime: Schema.string().pattern(TIME_PATTERN).description('周表推送时刻（HH:mm）').default('08:00'),
+      seasonTime: Schema.string().pattern(TIME_PATTERN).description('季度首日推送时刻（HH:mm）').default('08:00'),
+
+      weeklyWeekday: Schema.union(WEEKDAYS.map((item) => Schema.const(item.value).description(item.label)))
+        .description('周表推送星期')
+        .default(1),
       dailyOffsetDays: Schema.number()
         .min(DAILY_OFFSET_MIN).max(DAILY_OFFSET_MAX).step(1)
-        .description('日期偏移，0 当天、-1 前一天、1 后一天')
+        .description('定时每日表的日期偏移：0 今天，-1 昨天，1 明天')
         .default(0),
-      nightEnabled: Schema.boolean().description('深夜档，当晚 21:00 至次日 06:00').default(true),
-      nightTime: Schema.string().pattern(TIME_PATTERN).description('推送时刻').default('21:00'),
-      weeklyEnabled: Schema.boolean().description('本周更新表').default(true),
-      weeklyWeekday: Schema.union(WEEKDAYS.map((item) => Schema.const(item.value).description(item.label)))
-        .description('周表的推送星期')
-        .default(1),
-      weeklyTime: Schema.string().pattern(TIME_PATTERN).description('推送时刻').default('08:00'),
-      seasonEnabled: Schema.boolean().description('本季新番表').default(true),
-      seasonTime: Schema.string().pattern(TIME_PATTERN).description('季度首日的推送时刻').default('08:00'),
-      updateReminderEnabled: Schema.boolean().description('订阅作品的开播提醒').default(true),
       updateLookaheadMinutes: Schema.number()
         .min(1).step(1)
-        .description('提前多少分钟提醒')
+        .description('开播提醒提前分钟数')
         .default(30),
       updatePollMinutes: Schema.number()
         .min(1).step(1)
-        .description('检查间隔（分钟）')
+        .description('开播提醒检查间隔（分钟；不会超过提前量）')
         .default(10),
     }),
-  }).description('推送设置'),
+  }).description('推送'),
+
+  Schema.object({
+    subscription: Schema.object({
+      maxPerChannel: Schema.number()
+        .min(0).step(1)
+        .description('单个群或私聊的订阅上限，0 不限制')
+        .default(0),
+    }),
+  }).description('订阅'),
 
   Schema.object({
     content: Schema.object({
       maxItems: Schema.number()
         .min(0).step(1)
-        .description('单次推送最多显示多少部，0 不限制')
+        .description('单个番组表最多显示几部，0 不限制')
         .default(0),
       longRunningThreshold: Schema.number()
         .min(0).step(1)
-        .description('剔除长期连载番的话数阈值，0 不过滤')
+        .description('更新表中当前话数达到该值的作品不显示，0 不限制')
         .default(0),
     }),
-  }).description('推送内容'),
+  }).description('番组表内容'),
 
   Schema.object({
     output: Schema.object({
       format: Schema.union([
-        Schema.const('image').description('风格化图片'),
-        Schema.const('text').description('纯文本'),
+        Schema.const('image').description('图片'),
+        Schema.const('text').description('文本'),
       ])
-        .description('推送形态，图片渲染失败时自动改用文本')
+        .description('番组表与详情的输出形态；图片失败时自动改用文本')
         .default('image'),
       layout: Schema.union([
         Schema.const('table').description('时间表'),
         Schema.const('list').description('卡片列表'),
       ])
-        .description('图片排版')
+        .description('番组表图片的排版')
         .default('table'),
+
+      showCover: Schema.boolean().description('番组表图片中显示封面').default(true),
+      showScore: Schema.boolean()
+        .description('番组表与搜索结果中显示 Bangumi 评分；需开启本地化，评价不足 10 条时隐藏')
+        .default(true),
+      useForward: Schema.boolean()
+        .description('多段文本使用合并转发（群聊且适配器支持时）')
+        .default(true),
+
       coverLimit: Schema.number()
         .min(0)
-        .description('单张图片最多加载多少张封面，0 不限制')
+        .description('单张番组表图最多加载几张封面，0 不限制')
         .default(0),
       infoKeywordLimit: Schema.number()
         .min(0)
-        .description('anime.info 按关键词查询番剧时显示数量上限，0 不限制')
+        .description('anime.info 关键词查询最多显示几部，0 不限制')
         .default(20),
-      showCover: Schema.boolean().description('显示封面').default(true),
-      showScore: Schema.boolean().description('显示评分，评价不足 10 条时隐藏').default(true),
-      useForward: Schema.boolean()
-        .description('纯文本模式用合并转发，避免刷屏')
-        .default(true),
     }),
-  }).description('输出设置'),
-
-  Schema.object({
-    localize: Schema.object({
-      enabled: Schema.boolean()
-        .description('使用中文标题与评分')
-        .default(true),
-      titleStyle: Schema.union([
-        Schema.const('localized').description('仅中文'),
-        Schema.const('both').description('中文（日文原名）'),
-        Schema.const('original').description('仅日文原名'),
-      ])
-        .description('标题展示方式')
-        .default('localized'),
-      scoreTtlHours: Schema.number()
-        .min(1).step(1)
-        .description('评分多久后台补取一次（小时），到期不阻塞构建')
-        .default(DEFAULT_SCORE_TTL_HOURS),
-      cacheTtlDays: Schema.number()
-        .min(1).step(1)
-        .description('标题与封面的缓存天数')
-        .default(30),
-      airingTtlHours: Schema.number()
-        .min(1).step(1)
-        .description('是否已播完的缓存小时数')
-        .default(6),
-    }),
-  }).description('本地化'),
+  }).description('输出'),
 
   Schema.object({
     render: Schema.object({
       fontFamily: Schema.string()
-        .description('字体族，留空则自动寻找系统中文字体')
+        .description('图片字体；默认自动加载系统中文字体，也可填写本机已安装的字体')
         .default(DEFAULT_FONT_FAMILY),
       coverConcurrency: Schema.number()
         .min(1)
@@ -226,43 +214,62 @@ export const Config: Schema<Config> = Schema.intersect([
         .default(COVER_CONCURRENCY),
       coverCacheDays: Schema.number()
         .min(0)
-        .description('封面缓存天数，0 不写磁盘')
+        .description('封面磁盘缓存天数，0 不写磁盘')
         .default(21),
       jpegQuality: Schema.number()
         .min(1).max(100).step(1)
-        .description('编码质量')
+        .description('JPEG 质量（1–100），越高越清晰、体积越大')
         .default(DEFAULT_JPEG_QUALITY),
       supersample: Schema.number()
         .min(1).max(MAX_SUPERSAMPLE).step(1)
-        .description('超采样倍数')
+        .description('超采样倍数（1–5），越高越清晰、耗时与体积越大')
         .default(DEFAULT_SUPERSAMPLE),
     }),
   }).description('图片'),
 
   Schema.object({
-    subscription: Schema.object({
-      maxPerChannel: Schema.number()
-        .min(0).step(1)
-        .description('单个群最多订阅多少部，0 不限制')
-        .default(0),
+    localize: Schema.object({
+      enabled: Schema.boolean()
+        .description('优先使用中文标题与 Bangumi 评分')
+        .default(true),
+      titleStyle: Schema.union([
+        Schema.const('localized').description('仅中文'),
+        Schema.const('both').description('中文（日文原名）'),
+        Schema.const('original').description('仅日文原名'),
+      ])
+        .description('本地化开启时的标题展示方式')
+        .default('localized'),
+
+      cacheTtlDays: Schema.number()
+        .min(1).step(1)
+        .description('标题与封面地址的缓存天数')
+        .default(30),
+      scoreTtlHours: Schema.number()
+        .min(1).step(1)
+        .description('评分与评价人数的刷新间隔（小时）')
+        .default(DEFAULT_SCORE_TTL_HOURS),
+      airingTtlHours: Schema.number()
+        .min(1).step(1)
+        .description('AniList 播出状态缓存（小时）')
+        .default(6),
     }),
-  }).description('订阅'),
+  }).description('本地化'),
 
   Schema.object({
     advanced: Schema.object({
       requestTimeout: Schema.number()
         .min(1)
-        .description('单次请求超时（秒）')
+        .description('默认请求超时（秒）')
         .default(LOCALIZE_TIMEOUT_SECONDS),
       retries: Schema.number()
         .min(0)
-        .description('请求失败重试次数')
+        .description('请求失败后的默认重试次数')
         .default(2),
       debug: Schema.boolean()
         .description('输出调试日志')
         .default(false),
     }),
-  }).description('其他'),
+  }).description('高级'),
 ])
 
 /** 把配置夹到安全区间：只保证类型正确且不小于最小值，不设人为上限 */
