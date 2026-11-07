@@ -66,11 +66,11 @@ export const usage = `
 
 ### 注意
 
-首次使用执行 \`anime.on\` 开启定时推送。
-推送类型为 \`daily\`、\`night\`、\`weekly\`、\`season\`，发送时间在控制台配置。
-季度支持 \`2026-07\`、\`26夏\`，\`-o\` 查看相邻季度。
-每日、深夜与本周只列仍在播出的作品；本季表收录该季首播的 TV / WEB 动画。
-封面与评分不可达时，可安装并启用 **[proxy-agent](/market/?keyword=proxy-agent)** 配置代理。
+- 首次使用执行 \`anime.on\` 开启定时推送。
+- 推送类型为 \`daily\`、\`night\`、\`weekly\`、\`season\`，发送时间在控制台配置。
+- 季度支持 \`2026-07\`、\`26夏\`，\`-o [偏移]\` 查看其他季度。
+- 每日、深夜与本周只列仍在播出的作品；本季表收录该季首播的 TV / WEB 动画。
+- 封面与评分不可达时，可安装并启用 **[proxy-agent](/market/?keyword=proxy-agent)** 配置代理。
 `
 
 const logger = new Logger(PLUGIN_NAME)

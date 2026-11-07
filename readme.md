@@ -109,11 +109,30 @@ npm i koishi-plugin-anime-schedule
 
 - 每日、深夜、本周表只列仍在播出的作品；本季表收录该季首播的 TV / WEB 动画。
 - 时间轴虚线表示当前时刻，上方已播出，下方未播出。
-- 播出时刻优先取 AniList，缺失时按放送周期推算；推送会去重，播完的作品会从表和订阅列表移除。
+- 播出时刻优先取 AniList，缺失时按放送周期推算；播完的作品会从更新表和订阅列表移除。
+- 定时推送与开播提醒都会去重，不会重复发送。
+- `anime.list` / `anime.clear` 在群聊与私聊都可用；`anime.on` / `anime.off` / `anime.status` 只适用于群聊。
+- 调试日志可能包含搜索词与指令参数，排查后请关闭。
 
-## 来源
+## 常见问题
 
-作品清单与中文标题来自 [bangumi-data](https://github.com/bangumi-data/bangumi-data)，封面与评分来自 [Bangumi](https://bgm.tv/)，播出时刻与状态来自 [AniList](https://anilist.co/)。
+**时间与某个站点差 1 小时？** 检查 `timeZone`，日本时间是 UTC+9。
+
+**显示已更新但看不到播放源？** 时刻以日本电视台档期为准，配信平台可能提前或延后。
+
+**当季新番没出现？** 本季表只收 TV / WEB；也可能尚未被 bangumi-data 收录。
+
+**老番出现在今日表？** 条目仍在更新，或上游数据尚未完结。
+
+**封面或评分一直加载失败？** 通常是网络无法访问 Bangumi 图床或接口，安装 [proxy-agent](/market/?keyword=proxy-agent) 并配置代理。
+
+**没有收到定时推送？** 先在群聊执行 `anime.on`，再用 `anime.status` 检查开关；仍没有就核对控制台的推送时刻。
+
+## 致谢
+
+- [bangumi-data](https://github.com/bangumi-data/bangumi-data)：作品清单、中文标题与放送周期。
+- [Bangumi 番组计划](https://bgm.tv/)：封面与评分。
+- [AniList](https://anilist.co/)：封面、播出时刻与状态。
 
 ## License
 
