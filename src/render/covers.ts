@@ -18,17 +18,21 @@ import { HttpClient } from '../services/network'
 const DECODE_WAIT_MS = 5000
 
 /**
- * 磁盘缩略图的 JPEG 质量；封面不会再被放大到超过配置的边长，q90 足够
+ * 磁盘缩略图的 JPEG 质量。
+ *
+ * 缩略图之后还要参与整图 JPEG 编码，q90 会形成可见的二次压缩痕迹；q95 在体积和
+ * 清晰度之间更稳，q100 则会让 1024px 封面单张接近 1MB，反而失去缩略图的意义。
  */
-const COVER_THUMB_QUALITY = 90
+const COVER_THUMB_QUALITY = 95
 
 /**
  * 磁盘缓存键的版本号。
  *
  * 缓存格式变更后必须改它：v2 及以前存的是接口原图，v3 起只存插件生成的缩略图，
- * v4 起缩略图边长由用户配置决定并参与键计算。旧文件由 `prune()` 按 TTL 与数量上限清掉。
+ * v4 起缩略图边长由用户配置决定并参与键计算，v5 起缩略图质量提高到 95。
+ * 旧文件由 `prune()` 按 TTL 与数量上限清掉。
  */
-const COVER_CACHE_VERSION = 4
+const COVER_CACHE_VERSION = 5
 
 /**
  * 单张封面的总时间预算（含多候选地址）。

@@ -156,6 +156,15 @@ export class Renderer {
   private createSurface(width: number, height: number): { canvas: Canvas; ctx: SKRSContext2D; scale: number } {
     // 高倍超采样在长图上会平方级放大像素量；按面积上限收一收，小图仍可保留用户设置
     const scale = Math.max(1, Math.min(this.scale, Math.sqrt(MAX_RENDER_PIXELS / Math.max(1, width * height))))
+    if (scale < this.scale) {
+      this.logger.debug(
+        '[render] 图片像素量超过上限，超采样 %sx → %sx（逻辑尺寸 %dx%d）',
+        this.scale,
+        scale.toFixed(2),
+        width,
+        height,
+      )
+    }
     const canvas = createCanvas(Math.round(width * scale), Math.round(height * scale))
     const ctx = canvas.getContext('2d')
     if (scale !== 1) ctx.scale(scale, scale)
