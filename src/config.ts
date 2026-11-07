@@ -6,6 +6,7 @@ import {
   DEFAULT_SCORE_TTL_HOURS,
   DAILY_OFFSET_MAX,
   DAILY_OFFSET_MIN,
+  DEFAULT_NIGHT_RANGE,
   DEFAULT_SUPERSAMPLE,
   LOCALIZE_TIMEOUT_SECONDS,
   MAX_COVER_CONCURRENCY,
@@ -15,7 +16,7 @@ import {
   MAX_UPDATE_LOOKAHEAD_MINUTES,
 } from './constants'
 import type { DigestFormat, ImageLayout, PluginLocale, TimeZone, TitleStyle } from './types'
-import { resolveTimeZone } from './utils/time'
+import { parseClock, resolveTimeZone } from './utils/time'
 
 export interface Config {
   timeZone: TimeZone
@@ -32,6 +33,8 @@ export interface Config {
 
   schedule: {
     dailyTime: string
+    /** 深夜档起止时间：开始于当天，结束于次日 */
+    nightRange: [string, string]
     nightTime: string
     weeklyTime: string
     seasonTime: string
@@ -128,7 +131,7 @@ export const Config: Schema<Config> = Schema.intersect([
   Schema.object({
     push: Schema.object({
       dailyEnabled: Schema.boolean().description('开启后每天推送更新表').default(true),
-      nightEnabled: Schema.boolean().description('开启后推送深夜档（21:00–06:00）').default(true),
+      nightEnabled: Schema.boolean().description('开启后推送深夜档更新表').default(true),
       weeklyEnabled: Schema.boolean().description('开启后每周推送更新表').default(true),
       seasonEnabled: Schema.boolean().description('开启后每季首日推送新番表').default(true),
       updateReminderEnabled: Schema.boolean().description('开启后推送订阅开播提醒').default(true),
@@ -141,6 +144,13 @@ export const Config: Schema<Config> = Schema.intersect([
         .pattern(TIME_PATTERN)
         .description('每日推送时刻（HH:mm）')
         .default('08:00'),
+      nightRange: Schema.tuple([
+        Schema.string().pattern(TIME_PATTERN).required(),
+        Schema.string().pattern(TIME_PATTERN).required(),
+      ])
+        // tuple 的推断类型是可变长数组，这里收窄成固定两元组
+        .description('深夜档起止时间（HH:mm，开始→次日结束）')
+        .default([...DEFAULT_NIGHT_RANGE]) as Schema<[string, string]>,
       nightTime: Schema.string()
         .pattern(TIME_PATTERN)
         .description('深夜档推送时刻（HH:mm）')
@@ -320,6 +330,24 @@ interface LegacyConfig {
   }
 }
 
+/** 校验深夜档范围：必须跨午夜，返回补零后的 [开始, 结束] */
+function normalizeNightRange(value: unknown): [string, string] {
+  if (!Array.isArray(value) || value.length !== 2) return [...DEFAULT_NIGHT_RANGE]
+  const start = typeof value[0] === 'string' ? parseClock(value[0]) : null
+  const end = typeof value[1] === 'string' ? parseClock(value[1]) : null
+  if (!start || !end) return [...DEFAULT_NIGHT_RANGE]
+  const startMinutes = start.hour * 60 + start.minute
+  const endMinutes = end.hour * 60 + end.minute
+  // 开始必须在中午之后、结束在次日中午之前，且确实跨过午夜；否则会得到当天或超长窗口
+  if (startMinutes < 12 * 60 || endMinutes >= 12 * 60 || startMinutes <= endMinutes) {
+    return [...DEFAULT_NIGHT_RANGE]
+  }
+  const clock = (item: { hour: number; minute: number }) => (
+    `${String(item.hour).padStart(2, '0')}:${String(item.minute).padStart(2, '0')}`
+  )
+  return [clock(start), clock(end)]
+}
+
 /** 把配置夹到安全区间：只保证类型正确且不小于最小值，不设人为上限 */
 export function normalizeConfig(config: Config): Config {
   const legacy = config as Config & LegacyConfig
@@ -371,6 +399,7 @@ export function normalizeConfig(config: Config): Config {
     },
     schedule: {
       dailyTime: time(legacyPush.dailyTime ?? config.schedule?.dailyTime, '08:00'),
+      nightRange: normalizeNightRange(config.schedule?.nightRange),
       nightTime: time(legacyPush.nightTime ?? config.schedule?.nightTime, '21:00'),
       weeklyTime: time(legacyPush.weeklyTime ?? config.schedule?.weeklyTime, '08:00'),
       seasonTime: time(legacyPush.seasonTime ?? config.schedule?.seasonTime, '08:00'),

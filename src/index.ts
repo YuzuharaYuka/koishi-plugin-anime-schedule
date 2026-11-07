@@ -50,7 +50,7 @@ export const usage = `
 | :--- | :--- | :--- |
 | \`anime\` | 番剧 / 新番 | 今日更新表 |
 | \`anime.today [-o 偏移]\` | 今日新番 | 今日更新；\`-o -1\` 看昨天 |
-| \`anime.night\` | 深夜新番 | 今晚 21:00 至次日 06:00 |
+| \`anime.night\` | 深夜新番 | 今晚深夜档 |
 | \`anime.week\` | 本周新番 | 今天起七天 |
 | \`anime.season [季度]\` | 本季新番 | 本季或指定季度 |
 | \`anime.search <关键词> [-l 数量]\` | 番剧搜索 | 搜索作品 |
@@ -67,7 +67,7 @@ export const usage = `
 ### 注意
 
 - 首次使用执行 \`anime.on\` 开启定时推送。
-- 推送类型为 \`daily\`、\`night\`、\`weekly\`、\`season\`，发送时间在控制台配置。
+- 推送类型为 \`daily\`、\`night\`、\`weekly\`、\`season\`，发送时间与深夜档范围在控制台配置。
 - 季度支持 \`2026-07\`、\`26夏\`，\`-o [偏移]\` 查看其他季度。
 - 每日、深夜与本周只列仍在播出的作品；本季表收录该季首播的 TV / WEB 动画。
 - 封面与评分不可达时，可安装并启用 **[proxy-agent](/market/?keyword=proxy-agent)** 配置代理。
@@ -234,7 +234,7 @@ function registerCommands(ctx: Context, deps: HandlerContext) {
 
   cmd.subcommand('.night', '获取今晚深夜档')
     .alias('深夜新番', '今晚新番', '深夜档')
-    .usage('返回今晚 21:00 之后与次日 6:00 之前的场次，凌晨场次按实际播出时刻展示。')
+    .usage('返回今晚深夜档范围内的场次，范围可在控制台调整；凌晨场次按实际播出时刻展示。')
     .example('anime.night')
     .action(async ({ session }) => {
       if (!session) return

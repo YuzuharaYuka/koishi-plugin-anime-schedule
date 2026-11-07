@@ -33,18 +33,14 @@ import {
   getDayStartMs,
   getLocalWeekday,
   getSeasonStartMonth,
+  parseClock,
+  resolveNightWindow,
   today,
 } from '../utils/time'
 import { clamp, errorMessage } from '../utils'
 
 /** 「本周表」向后覆盖的天数 */
 const FOLLOWING_WINDOW_DAYS = 14
-
-/**
- * 「深夜档」的窗口：当晚 21:00 ~ 次日 06:00（按配置时区）。
- * 起点 21:00 是为了收全「今晚这一档」，终点 06:00 是为了覆盖凌晨 5 点档。
- */
-const EVENING_START_HOUR = 21
 
 /** 季表匹配 AniList 首播时刻的容差（天）；超出说明那条记录讲的是别的季度，回退索引层时刻。
  *  取 45 天：季表窗口有 10 天提前量，季末提前放送与延期开播都可能偏出两周。 */
@@ -1103,7 +1099,13 @@ export class DigestService {
 
   /** 每种表的表头 */
   private headerOf(kind: DigestKind, window: { fromMs: number; lastDayEndMs: number }): string {
-    if (kind === 'night') return this.messages.nightHeader(this.describeDate(window.fromMs))
+    if (kind === 'night') {
+      return this.messages.nightHeader(
+        this.describeDate(window.fromMs),
+        this.config.schedule.nightRange[0],
+        this.config.schedule.nightRange[1],
+      )
+    }
     if (kind === 'weekly') {
       return this.messages.weeklyHeader(
         this.describeDate(window.fromMs),
@@ -1129,7 +1131,10 @@ export class DigestService {
       if (evening.length) {
         groups.push(this.toDayGroup(
           window.date,
-          this.messages.tonightGroup(this.describeDate(window.fromMs)),
+          this.messages.tonightGroup(
+            this.describeDate(window.fromMs),
+            this.config.schedule.nightRange[0],
+          ),
           evening,
         ))
       }
@@ -1207,20 +1212,20 @@ export class DigestService {
   }
 
   /**
-   * 深夜档更新表：覆盖「今晚 21:00 之后」与「次日 6:00 之前」两段。凌晨场次按实际播出时刻
+   * 深夜档更新表：覆盖「今晚开始」到「次日结束」的一段。凌晨场次按实际播出时刻
    * 展示，因此熬夜追更时一眼就能看到现在之后还有什么可看。
    */
   async buildNight(subscribed: Set<string> = EMPTY_SETS, now = Date.now()): Promise<Digest> {
-    const key = `night|${today(this.timeZone, now)}`
+    const range = this.config.schedule.nightRange
+    const key = `night|${today(this.timeZone, now)}|${range[0]}-${range[1]}`
     const create = () => this.buildAirings('night', EMPTY_SETS, now, (at) => {
       const date = today(this.timeZone, at)
-      const eveningStartMs = getDayStartMs(date, this.timeZone) + EVENING_START_HOUR * 3600000
-      const tomorrowStartMs = getDayStartMs(addDays(date, 1, this.timeZone), this.timeZone)
+      const window = resolveNightWindow(date, range, this.timeZone)
       return {
-        fromMs: eveningStartMs,
-        toMs: tomorrowStartMs + LATE_NIGHT_END_HOUR * 3600000 - 1,
+        fromMs: window.fromMs,
+        toMs: window.toMs,
         onePerTitle: true,
-        now: eveningStartMs,
+        now: window.fromMs,
       }
     })
     return this.shared(key, create, subscribed)
@@ -1446,7 +1451,13 @@ export class DigestService {
     }
     const limited = this.applyLimit(groups)
     const items = groups.flatMap((group) => group.items)
-    const lateNight = items.filter((item) => Number(item.time.slice(0, 2)) < LATE_NIGHT_END_HOUR).length
+    // 深夜档按配置的结束时刻统计；其他表仍以 06:00 为界
+    const nightEnd = kind === 'night' ? parseClock(this.config.schedule.nightRange[1]) : null
+    const cutoff = nightEnd ? nightEnd.hour * 60 + nightEnd.minute : LATE_NIGHT_END_HOUR * 60
+    const lateNight = items.filter((item) => {
+      const minutes = Number(item.time.slice(0, 2)) * 60 + Number(item.time.slice(3))
+      return minutes < cutoff
+    }).length
     const base = `${summaryPrefix}${this.messages.summaryOf(items.length, lateNight)}`
     this.logger.debug('[digest] %s 构建完成: %d 组 / %d 部（深夜 %d）%s',
       kind, limited.groups.length, items.length, lateNight, limited.truncated ? `，${limited.truncated}` : '')

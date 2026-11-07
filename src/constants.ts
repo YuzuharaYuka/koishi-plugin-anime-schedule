@@ -92,9 +92,8 @@ export const IMAGE_LIST_TWO_COLUMN_AT = 26
 /**
  * 「深夜番」的判定：本地时间 0 点到 6 点算作前一日的深夜档。
  *
- * 与 `DigestService` 的深夜档窗口终点（次日 06:00）保持一致——两处都表示「凌晨这一段的结束时刻」，
- * 改一处时另一处也要跟着改。这里的用途是统计与文案（`finish()` 里的「其中 N 部为深夜档」、
- * 时间轴的 24 小时制续写），不是窗口本身。
+ * 用于每日/周表的凌晨统计（`finish()` 里的「其中 N 部为深夜档」）；深夜档自身的窗口
+ * 由 `schedule.nightRange` 决定，不再固定为 06:00 结束。
  */
 export const LATE_NIGHT_END_HOUR = 6
 
@@ -233,6 +232,9 @@ export const BOLD_FONT_CANDIDATES: string[] = [
  */
 export const DEFAULT_JPEG_QUALITY = 100
 
+/** 深夜档的默认起止时间：开始于当天，结束于次日 */
+export const DEFAULT_NIGHT_RANGE: [string, string] = ['21:00', '06:00']
+
 /**
  * 超采样倍数。
  *
@@ -240,12 +242,20 @@ export const DEFAULT_JPEG_QUALITY = 100
  * 得出边缘像素。清晰度主要取决于此：各版面最小字号仅 10~11px，1× 下一个字不足十几个
  * 像素，JPEG 质量再高也无法还原。
  *
- * 3 在密集的封面与小字上收益仍可见；5 是收益递减的上限。
+ * 2 在清晰度、内存与编码耗时之间较均衡；3 在密集的封面与小字上收益仍可见，5 是收益递减的上限。
  */
-export const DEFAULT_SUPERSAMPLE = 3
+export const DEFAULT_SUPERSAMPLE = 2
 
 /** 超采样倍数的可选上限，与配置项的 `.max()` 保持一致 */
 export const MAX_SUPERSAMPLE = 5
+
+/**
+ * 单张图片的物理像素上限。
+ *
+ * 周表/季表在 3–5 倍超采样下会达到 50–140MP，单张画布就要几百 MB；超过此值时按版面容
+ * 自动降低该张的倍率，避免低内存机器在出图时被 OOM 杀掉。
+ */
+export const MAX_RENDER_PIXELS = 24_000_000
 
 /**
  * 每日更新表的日期偏移范围（天）。
@@ -427,7 +437,7 @@ export const IMAGE_THEME = {
 export interface Messages {
   weekdayNames: string[]
   dailyHeader: (date: string) => string
-  nightHeader: (date: string) => string
+  nightHeader: (date: string, start: string, end: string) => string
   weeklyHeader: (start: string, end: string) => string
   seasonHeader: (label: string) => string
   subHeader: (count: number) => string
@@ -441,7 +451,7 @@ export interface Messages {
   /** 每日表与订阅表里「当天」那一段的标题 */
   daytimeGroup: string
   /** 深夜档推送里「今晚 21:00 起」那一段的标题 */
-  tonightGroup: (date: string) => string
+  tonightGroup: (date: string, start: string) => string
   /** 订阅表里「次日凌晨」那一段的标题 */
   tomorrowDawnGroup: (date: string) => string
   seasonLabel: (year: number, month: number) => string
@@ -488,7 +498,7 @@ export interface Messages {
 const ZH_CN: Messages = {
   weekdayNames: ['周日', '周一', '周二', '周三', '周四', '周五', '周六'],
   dailyHeader: (date) => `今日番剧更新 (${date})`,
-  nightHeader: (date) => `今晚深夜档 (${date})`,
+  nightHeader: (date, start, end) => `今晚深夜档 (${date} ${start}–${end})`,
   weeklyHeader: (start, end) => `本周番剧更新 (${start} 至 ${end})`,
   seasonHeader: (label) => `${label} 新番表`,
   subHeader: (count) => `订阅番剧更新 (共 ${count} 部)`,
@@ -499,7 +509,7 @@ const ZH_CN: Messages = {
   emptySub: '本群还没有订阅任何番剧，使用 `anime.sub <ID>` 添加。',
   noAiringSub: (count) => `本群订阅的 ${count} 部作品今天都没有播出。`,
   daytimeGroup: '今日播出',
-  tonightGroup: (date) => `今晚 (${date} 21:00 起)`,
+  tonightGroup: (date, start) => `今晚 (${date} ${start} 起)`,
   tomorrowDawnGroup: (date) => `次日凌晨 (${date})`,
   seasonLabel: (year, month) => `${year} 年 ${month} 月新番`,
   countUnit: '部',
@@ -533,7 +543,7 @@ const JA_JP: Messages = {
   ...ZH_CN,
   weekdayNames: ['日曜', '月曜', '火曜', '水曜', '木曜', '金曜', '土曜'],
   dailyHeader: (date) => `本日の番組表 (${date})`,
-  nightHeader: (date) => `今夜の深夜枠 (${date})`,
+  nightHeader: (date, start, end) => `今夜の深夜枠 (${date} ${start}〜${end})`,
   weeklyHeader: (start, end) => `今週の番組表 (${start} 〜 ${end})`,
   seasonHeader: (label) => `${label} 新作アニメ`,
   subHeader: (count) => `登録作品の更新 (全 ${count} 作品)`,
@@ -544,7 +554,7 @@ const JA_JP: Messages = {
   emptySub: 'このチャンネルには登録作品がありません。`anime.sub <ID>` で追加できます。',
   noAiringSub: (count) => `登録中の ${count} 作品は本日放送がありません。`,
   daytimeGroup: '本日の放送',
-  tonightGroup: (date) => `今夜 (${date} 21:00 以降)`,
+  tonightGroup: (date, start) => `今夜 (${date} ${start} 以降)`,
   tomorrowDawnGroup: (date) => `翌日未明 (${date})`,
   seasonLabel: (year, month) => `${year}年${month}月期`,
   countUnit: '作品',
@@ -578,7 +588,7 @@ const EN_US: Messages = {
   ...ZH_CN,
   weekdayNames: ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'],
   dailyHeader: (date) => `Airing today (${date})`,
-  nightHeader: (date) => `Late night tonight (${date})`,
+  nightHeader: (date, start, end) => `Late night tonight (${date} ${start}–${end})`,
   weeklyHeader: (start, end) => `Airing this week (${start} to ${end})`,
   seasonHeader: (label) => `${label} lineup`,
   subHeader: (count) => `Subscribed titles (${count})`,
@@ -589,7 +599,7 @@ const EN_US: Messages = {
   emptySub: 'No subscription in this channel yet. Add one with `anime.sub <ID>`.',
   noAiringSub: (count) => `None of your ${count} subscribed titles air today.`,
   daytimeGroup: 'Airing today',
-  tonightGroup: (date) => `Tonight (from 21:00, ${date})`,
+  tonightGroup: (date, start) => `Tonight (from ${start}, ${date})`,
   tomorrowDawnGroup: (date) => `After midnight (${date})`,
   seasonLabel: (year, month) => `${year}-${String(month).padStart(2, '0')} season`,
   countUnit: 'titles',

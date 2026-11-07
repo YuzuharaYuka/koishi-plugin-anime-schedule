@@ -1,13 +1,13 @@
 import { createCanvas, type Canvas, type SKRSContext2D } from '@napi-rs/canvas'
 import { HttpClient } from '../services/network'
 import type { Context, Logger } from 'koishi'
-import { IMAGE_LIST_TWO_COLUMN_AT, IMAGE_LAYOUT, IMAGE_MAX_CARDS, LATE_NIGHT_END_HOUR, getMessages } from '../constants'
+import { IMAGE_LIST_TWO_COLUMN_AT, IMAGE_LAYOUT, IMAGE_MAX_CARDS, MAX_RENDER_PIXELS, getMessages } from '../constants'
 import type { Messages } from '../constants'
 import type { Config } from '../config'
 import type { Digest, DigestGroup, DigestItem, RenderPayload } from '../types'
 import { font, FONT_SIZE, registerFonts } from './fonts'
 import { CoverStore } from './covers'
-import { formatClock, formatMoment, getTimeZoneOffsetMs } from '../utils/time'
+import { formatClock, formatMoment, getTimeZoneOffsetMs, parseClock } from '../utils/time'
 import type { SubjectInfo } from '../services/info'
 import { renderInfoCard } from './info'
 import {
@@ -97,14 +97,15 @@ export class Renderer {
     this.init()
     const started = Date.now()
     const canvas = await this.draw(payload)
+    const scale = canvas.width / this.canvasWidth(payload)
     const encoded = await canvas.encode('jpeg', this.config.render.jpegQuality)
     this.logger.debug(
-      '[render] %s 出图完成（%dms），尺寸 %dx%d（超采样 %dx），%d bytes（jpeg q=%d）',
+      '[render] %s 出图完成（%dms），尺寸 %dx%d（超采样 %sx），%d bytes（jpeg q=%d）',
       payload.kind,
       Date.now() - started,
       canvas.width,
       canvas.height,
-      this.scale,
+      scale.toFixed(2),
       encoded.length,
       this.config.render.jpegQuality,
     )
@@ -152,14 +153,15 @@ export class Renderer {
    *
    * `width` / `height` 仍是逻辑尺寸，各版面照旧用逻辑坐标排版，由 `ctx.scale` 映射到实际像素。
    */
-  private createSurface(width: number, height: number): { canvas: Canvas; ctx: SKRSContext2D } {
-    const s = this.scale
-    const canvas = createCanvas(Math.round(width * s), Math.round(height * s))
+  private createSurface(width: number, height: number): { canvas: Canvas; ctx: SKRSContext2D; scale: number } {
+    // 高倍超采样在长图上会平方级放大像素量；按面积上限收一收，小图仍可保留用户设置
+    const scale = Math.max(1, Math.min(this.scale, Math.sqrt(MAX_RENDER_PIXELS / Math.max(1, width * height))))
+    const canvas = createCanvas(Math.round(width * scale), Math.round(height * scale))
     const ctx = canvas.getContext('2d')
-    if (s !== 1) ctx.scale(s, s)
+    if (scale !== 1) ctx.scale(scale, scale)
     ctx.fillStyle = THEME.background
     ctx.fillRect(0, 0, width, height)
-    return { canvas, ctx }
+    return { canvas, ctx, scale }
   }
 
   /** 评分文本，未开启评分展示时为空 */
@@ -229,6 +231,7 @@ export class Renderer {
     // 列表排版优先：它的画布宽度只由版式决定，与表种无关（weekly + list 也走 900）
     if (this.config.output.layout === 'list') return L.listWidth
     if (payload.kind === 'weekly') return L.weekWidth
+    if (payload.kind === 'season') return L.seasonWidth
     return L.timelineWidth
   }
 
@@ -562,8 +565,11 @@ export class Renderer {
   /** 时间轴上显示的时刻：深夜档把次日凌晨写成 24 小时制续写 */
   private displayTime(item: DigestItem, night: boolean): string {
     if (!night) return item.time
+    const end = parseClock(this.config.schedule.nightRange[1]) ?? { hour: 6, minute: 0 }
+    const endMinutes = end.hour * 60 + end.minute
     const hour = Number(item.time.slice(0, 2))
-    if (hour >= LATE_NIGHT_END_HOUR) return item.time
+    const minutes = hour * 60 + Number(item.time.slice(3))
+    if (minutes >= endMinutes) return item.time
     return `${String(hour + 24).padStart(2, '0')}:${item.time.slice(3)}`
   }
 

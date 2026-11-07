@@ -188,6 +188,26 @@ export function resolveClockMs(date: string, clock: { hour: number; minute: numb
   return dayStart + (clock.hour * 60 + clock.minute) * 60000
 }
 
+/**
+ * 深夜档窗口：`range` 为 [当天开始, 次日结束]，返回 UTC 毫秒区间与次日零点。
+ * 配置层已保证范围跨午夜，这里仍对非法值回退到 21:00–06:00，避免调度器被空值打断。
+ */
+export function resolveNightWindow(
+  date: string,
+  range: [string, string],
+  timeZone: string,
+): { fromMs: number; toMs: number; tomorrowStartMs: number } {
+  const start = parseClock(range[0]) ?? { hour: 21, minute: 0 }
+  const end = parseClock(range[1]) ?? { hour: 6, minute: 0 }
+  const todayStart = getDayStartMs(date, timeZone)
+  const tomorrowStartMs = getDayStartMs(addDays(date, 1, timeZone), timeZone)
+  return {
+    fromMs: todayStart + (start.hour * 60 + start.minute) * 60000,
+    tomorrowStartMs,
+    toMs: tomorrowStartMs + (end.hour * 60 + end.minute) * 60000 - 1,
+  }
+}
+
 /** 4 月 / 7 月 / 10 月 / 1 月划分的季度，返回该季度的起始月 */
 export function getSeasonStartMonth(month: number): number {
   if (month <= 3) return 1

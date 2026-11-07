@@ -16,7 +16,7 @@ npm i koishi-plugin-anime-schedule
 | :--- | :--- | :--- |
 | `anime` | 番剧 / 新番 | 今日更新表 |
 | `anime.today [-o 偏移]` | 今日新番 | 今日更新；`-o -1` 查看前一天 |
-| `anime.night` | 深夜新番 | 今晚 21:00 至次日 06:00 |
+| `anime.night` | 深夜新番 | 今晚深夜档 |
 | `anime.week` | 本周新番 | 今天起七天 |
 | `anime.season [季度]` | 本季新番 | 本季或指定季度 |
 | `anime.search <关键词> [-l 数量]` | 番剧搜索 | 搜索作品，默认 10 条 |
@@ -58,6 +58,7 @@ npm i koishi-plugin-anime-schedule
 | 配置项 | 默认值 | 说明 |
 | :--- | :--- | :--- |
 | `dailyTime` | `08:00` | 每日推送时刻 |
+| `nightRange` | `21:00–06:00` | 深夜档起止时间 |
 | `nightTime` | `21:00` | 深夜档推送时刻 |
 | `weeklyTime` | `08:00` | 周表推送时刻 |
 | `seasonTime` | `08:00` | 季度首日推送时刻 |
@@ -86,7 +87,10 @@ npm i koishi-plugin-anime-schedule
 | 配置项 | 默认值 | 说明 |
 | :--- | :--- | :--- |
 | `fontFamily` | `Anime Schedule Sans` | 图片字体，可填本机字体 |
+| `coverLimit` | `0` | 单张图封面数上限 |
 | `coverCacheDays` | `21` | 封面缓存天数 |
+| `jpegQuality` | `100` | JPEG 质量（1–100） |
+| `supersample` | `2` | 超采样倍数，越高越清晰 |
 
 ### 本地化
 
@@ -125,6 +129,8 @@ npm i koishi-plugin-anime-schedule
 **老番出现在今日表？** 条目仍在更新，或上游数据尚未完结。
 
 **封面或评分一直加载失败？** 通常是网络无法访问 Bangumi 图床或接口，安装 [proxy-agent](/market/?keyword=proxy-agent) 并配置代理。
+
+**图片生成很慢或占用内存很高？** 调低 `supersample`、`jpegQuality`，或把 `coverLimit` 设为 40 左右。
 
 **没有收到定时推送？** 先在群聊执行 `anime.on`，再用 `anime.status` 检查开关；仍没有就核对控制台的推送时刻。
 
