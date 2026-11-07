@@ -195,7 +195,7 @@ export interface DigestItem {
   firstYear: number | null
   /** 首播月份，未知时为 null */
   firstMonth: number | null
-  /** 是否在本群的订阅列表里 */
+  /** 是否在本会话的订阅列表里 */
   subscribed: boolean
   /** 日期文案，例如 `9月24日周四 22:30` */
   airLabel: string

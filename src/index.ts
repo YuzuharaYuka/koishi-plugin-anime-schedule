@@ -60,8 +60,8 @@ export const usage = `
 | \`anime.list\` | 订阅列表 | 查看本会话订阅 |
 | \`anime.clear\` | 清空订阅 | 清空本会话订阅 |
 | \`anime.next [天数]\` | 追番计划 | 未来 1–31 天排期 |
-| \`anime.on\` / \`anime.off\` | 开启推送 / 关闭推送 | 本群推送开关 |
-| \`anime.status\` | 推送状态 | 查看本群推送设置 |
+| \`anime.on\` / \`anime.off\` | 开启推送 / 关闭推送 | 本会话推送开关 |
+| \`anime.status\` | 推送状态 | 查看本会话推送设置 |
 | \`anime.push <类型>\` | 立即推送 | 手动推送一次 |
 
 ### 注意
@@ -340,7 +340,7 @@ function registerCommands(ctx: Context, deps: HandlerContext) {
       return commandNext(deps, session, days ? String(days) : undefined)
     })
 
-  cmd.subcommand('.on [kind:string]', '开启本群的定时推送')
+  cmd.subcommand('.on [kind:string]', '开启本会话的定时推送')
     .alias('开启推送', '开启新番推送')
     .usage('不填类型时同时开启每日、深夜档、本周与本季四种推送；类型支持 `daily` `night` `weekly` `season`。')
     .example('anime.on')
@@ -350,7 +350,7 @@ function registerCommands(ctx: Context, deps: HandlerContext) {
       return commandOn(deps, session, kind)
     })
 
-  cmd.subcommand('.off [kind:string]', '关闭本群的定时推送')
+  cmd.subcommand('.off [kind:string]', '关闭本会话的定时推送')
     .alias('关闭推送', '关闭新番推送')
     .usage('不填类型时同时关闭四种推送；关闭后订阅作品的开播提醒仍然有效。')
     .example('anime.off weekly')
@@ -359,7 +359,7 @@ function registerCommands(ctx: Context, deps: HandlerContext) {
       return commandOff(deps, session, kind)
     })
 
-  cmd.subcommand('.status', '查看本群的推送状态')
+  cmd.subcommand('.status', '查看本会话的推送状态')
     .alias('推送状态', '新番状态')
     .example('anime.status')
     .action(async ({ session }) => {

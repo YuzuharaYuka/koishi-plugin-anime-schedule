@@ -507,8 +507,8 @@ const ZH_CN: Messages = {
   emptyNight: '今晚没有符合条件的深夜档节目。',
   emptyWeekly: '本周没有符合条件的番剧播出。',
   emptySeason: '本季暂时没有符合条件的番剧。',
-  emptySub: '本群还没有订阅任何番剧，使用 `anime.sub <ID>` 添加。',
-  noAiringSub: (count) => `本群订阅的 ${count} 部作品今天都没有播出。`,
+  emptySub: '本会话还没有订阅任何番剧，使用 `anime.sub <ID>` 添加。',
+  noAiringSub: (count) => `本会话订阅的 ${count} 部作品今天都没有播出。`,
   daytimeGroup: '今日播出',
   tonightGroup: (date, start) => `今晚 (${date} ${start} 起)`,
   tomorrowDawnGroup: (date) => `次日凌晨 (${date})`,
@@ -642,7 +642,7 @@ export function getMessages(locale: PluginLocale): Messages {
 
 /** 交互回复：完整句，结尾带句号 */
 export const RESPONSES = {
-  needGuild: '请在群聊中使用此指令。',
+  needSession: '无法确定当前会话，请从聊天窗口重试。',
   invalidKind: (value: string) => h.text(`无效的推送类型: ${value}，可选值为 daily、night、weekly、season。`),
   invalidDigest: (value: string) => h.text(`无效的推送类型: ${value}，可选值为 daily、night、weekly、season。`),
   invalidTid: (value: string) => h.text(`无效的作品 ID: ${value}，请使用 Bangumi 条目 ID（如 \`253104\`）或搜索结果中的序号。`),

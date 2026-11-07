@@ -26,8 +26,8 @@ npm i koishi-plugin-anime-schedule
 | `anime.list` | 订阅列表 | 查看本会话订阅 |
 | `anime.clear` | 清空订阅 | 清空本会话订阅 |
 | `anime.next [天数]` | 追番计划 | 订阅作品未来排期 |
-| `anime.on` / `anime.off` | 开启推送 / 关闭推送 | 本群推送开关，可指定类型 |
-| `anime.status` | 推送状态 | 查看本群推送设置 |
+| `anime.on` / `anime.off` | 开启推送 / 关闭推送 | 本会话推送开关，可指定类型 |
+| `anime.status` | 推送状态 | 查看本会话推送设置 |
 | `anime.push <类型>` | 立即推送 | 手动发送一次 |
 
 季度支持 `2026-07`、`2026年7月`、`26夏`；加 `-o -1`、`-o 1` 查看相邻季度。
@@ -116,7 +116,7 @@ npm i koishi-plugin-anime-schedule
 - 时间轴虚线表示当前时刻，上方已播出，下方未播出。
 - 播出时刻优先取 AniList，缺失时按放送周期推算；播完的作品会从更新表和订阅列表移除。
 - 定时推送与开播提醒都会去重，不会重复发送。
-- `anime.list` / `anime.clear` 在群聊与私聊都可用；`anime.on` / `anime.off` / `anime.status` 只适用于群聊。
+- 以上指令均以会话为单位，群聊与私聊都可用；推送开关和订阅只影响当前会话。
 - 调试日志可能包含搜索词与指令参数，排查后请关闭。
 
 ## 常见问题
@@ -135,7 +135,7 @@ npm i koishi-plugin-anime-schedule
 
 **图片生成很慢或占用内存很高？** 调低 `supersample`、`jpegQuality`，或把 `coverLimit` 设为 40 左右。
 
-**没有收到定时推送？** 先在群聊执行 `anime.on`，再用 `anime.status` 检查开关；仍没有就核对控制台的推送时刻。
+**没有收到定时推送？** 先在当前会话执行 `anime.on`，再用 `anime.status` 检查开关；仍没有就核对控制台的推送时刻。
 
 ## 致谢
 

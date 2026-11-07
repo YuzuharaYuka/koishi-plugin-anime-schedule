@@ -75,7 +75,12 @@ function writeSearchCache(session: Session, items: DigestItem[]): void {
 
 /** `Event.channelId` 与 `platform` 在类型上是可选的，这里统一收口 */
 function channelOf(session: Session): string {
-  return session.channelId ?? ''
+  return session.channelId || session.userId || ''
+}
+
+/** 私聊没有 guildId；数据库字段必填，用空串表示 */
+function guildOf(session: Session): string {
+  return session.guildId ?? ''
 }
 
 /**
@@ -398,13 +403,13 @@ async function renderInfoNode(deps: HandlerContext, detail: SubjectInfo): Promis
   }
 }
 
-/** 本群已订阅的 tid 集合，用于在详情卡上标「已订阅」 */
+/** 本会话已订阅的 tid 集合，用于在详情卡上标「已订阅」 */
 async function subscribedIds(deps: HandlerContext, session: Session): Promise<Set<string>> {
   const rows = await deps.digest.listSubscriptions(platformOf(session), channelOf(session))
   return new Set(rows.map((row) => row.tid))
 }
 
-/** 该作品是否已被本群订阅 */
+/** 该作品是否已被本会话订阅 */
 async function isSubscribed(deps: HandlerContext, session: Session, tid: string): Promise<boolean> {
   const rows = await deps.digest.listSubscriptions(platformOf(session), channelOf(session))
   return rows.some((row) => row.tid === tid)
@@ -610,21 +615,23 @@ async function togglePush(
   enabled: boolean,
 ): Promise<string | h | void> {
   const { ctx, config, digest } = deps
-  if (!session.guildId) return RESPONSES.needGuild
+  const channelId = channelOf(session)
+  if (!channelId) return RESPONSES.needSession
+  const guildId = guildOf(session)
 
   const raw = (kindText ?? '').trim().toLowerCase()
   const kind = raw ? KIND_ALIASES[raw] : null
   if (raw && !kind) return RESPONSES.invalidKind(kindText ?? '')
 
   try {
-    // 首次为本群建记录时，四种推送一律先关：`anime.on weekly` 只该开本周表，
-    // 若默认给 `true`，新群里执行一次 `anime.off weekly` 反而会静默打开另外三种
-    const existing = await digest.getChannel(platformOf(session), channelOf(session))
+    // 首次为本会话建记录时，四种推送一律先关：`anime.on weekly` 只该开本周表，
+    // 若默认给 `true`，新会话里执行一次 `anime.off weekly` 反而会静默打开另外三种
+    const existing = await digest.getChannel(platformOf(session), channelId)
     if (!existing) {
       await digest.ensureChannel({
         platform: platformOf(session),
-        channelId: channelOf(session),
-        guildId: session.guildId,
+        channelId,
+        guildId,
         botId: session.selfId,
         dailyEnabled: false,
         nightEnabled: false,
@@ -632,16 +639,16 @@ async function togglePush(
         seasonEnabled: false,
         enabled: true,
       })
-    } else if (existing.botId !== session.selfId || existing.guildId !== session.guildId) {
+    } else if (existing.botId !== session.selfId || existing.guildId !== guildId) {
       // 机器人换号或频道迁移后，开播提醒要能找到当前机器人；顺手刷新归属信息
       await ctx.database.set('anime_channel', {
         platform: platformOf(session),
-        channelId: channelOf(session),
-      }, { botId: session.selfId, guildId: session.guildId })
+        channelId,
+      }, { botId: session.selfId, guildId })
     }
     await digest.setKinds(
       platformOf(session),
-      channelOf(session),
+      channelId,
       kind === 'daily' ? { dailyEnabled: enabled }
         : kind === 'night' ? { nightEnabled: enabled }
           : kind === 'weekly' ? { weeklyEnabled: enabled }
@@ -652,27 +659,28 @@ async function togglePush(
     const scope = kind ? DIGEST_LABELS[kind] : '全部定时推送'
     deps.logger.debug('[command] anime.on/off: %s %s', scope, enabled ? '开' : '关')
     return enabled
-      ? `已开启本群的${scope}。\n推送时刻: ${describeTimes(config)} (${config.timeZone})`
-      : `已关闭本群的${scope}。`
+      ? `已开启本会话的${scope}。\n推送时刻: ${describeTimes(config)} (${config.timeZone})`
+      : `已关闭本会话的${scope}。`
   } catch (error) {
     deps.logger.warn('[command] 更新推送开关失败:', error)
     return RESPONSES.databaseFailed
   }
 }
 
-/** 查看本群的推送状态 */
+/** 查看本会话的推送状态 */
 export async function commandStatus(deps: HandlerContext, session: Session): Promise<string | void> {
   const { ctx, config, digest } = deps
-  if (!session.guildId) return RESPONSES.needGuild
+  const channelId = channelOf(session)
+  if (!channelId) return RESPONSES.needSession
 
   try {
-    const channel = await digest.getChannel(platformOf(session), channelOf(session))
-    const subscriptions = await digest.listSubscriptions(platformOf(session), channelOf(session))
+    const channel = await digest.getChannel(platformOf(session), channelId)
+    const subscriptions = await digest.listSubscriptions(platformOf(session), channelId)
     const dayStart = getDayStartMs(today(digest.timeZone), digest.timeZone)
     // 只取今天的记录；以前是全量取回再在内存里过滤，推送记录攒久后会越来越慢
     const dispatches = await ctx.database.get('anime_dispatch', {
       platform: platformOf(session),
-      channelId: channelOf(session),
+      channelId,
       dispatchedAt: { $gte: dayStart, $lt: dayStart + 86400000 },
     })
     const formatText = config.output.format === 'image'
