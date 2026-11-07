@@ -282,8 +282,14 @@ export const BUILD_CACHE_TTL_MS = 5 * 60 * 1000
 /** 构建结果同时留存几份（日/深夜/周/季 × 少量偏移），超出丢最早的一份 */
 export const BUILD_CACHE_MAX_ENTRIES = 16
 
-/** 默认字体别名；实际字体文件由 registerFonts 从系统字体中加载 */
-export const DEFAULT_FONT_FAMILY = 'Anime Schedule Sans'
+/**
+ * 默认字体配置：留空表示从系统字体中自动发现，不向用户暗示插件内置了专用字体。
+ * 实际注册时使用内部别名 `AUTO_FONT_ALIAS`。
+ */
+export const DEFAULT_FONT_FAMILY = ''
+
+/** 自动发现系统字体时注册到 canvas 的内部别名，不暴露给配置页 */
+export const AUTO_FONT_ALIAS = 'Anime Schedule Sans'
 
 /**
  * 图片版式常量。

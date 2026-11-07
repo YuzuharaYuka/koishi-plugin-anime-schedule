@@ -236,7 +236,7 @@ export const Config: Schema<Config> = Schema.intersect([
   Schema.object({
     render: Schema.object({
       fontFamily: Schema.string()
-        .description('图片字体，可填本机字体')
+        .description('图片字体，留空自动选择')
         .default(DEFAULT_FONT_FAMILY),
       coverMaxEdge: Schema.number()
         .min(COVER_MAX_EDGE_MIN).max(COVER_MAX_EDGE_MAX).step(1)

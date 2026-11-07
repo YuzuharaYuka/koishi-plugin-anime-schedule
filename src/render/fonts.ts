@@ -1,9 +1,9 @@
 import { GlobalFonts } from '@napi-rs/canvas'
 import type { Logger } from 'koishi'
-import { BOLD_FONT_CANDIDATES, DEFAULT_FONT_FAMILY, FONT_CANDIDATES } from '../constants'
+import { BOLD_FONT_CANDIDATES, AUTO_FONT_ALIAS, FONT_CANDIDATES } from '../constants'
 
-let regularFamily = DEFAULT_FONT_FAMILY
-let boldFamily = `${DEFAULT_FONT_FAMILY} Bold`
+let regularFamily = AUTO_FONT_ALIAS
+let boldFamily = `${AUTO_FONT_ALIAS} Bold`
 let initialized = false
 
 /** 兜底字体族：注册成固定名字供 `font()` 拼进字体栈，顺序即回退顺序 */
@@ -27,15 +27,17 @@ export function registerFonts(requestedFamily: string, logger: Logger): void {
   initialized = true
 
   const requested = requestedFamily?.trim() ?? ''
-  const custom = requested !== '' && requested !== DEFAULT_FONT_FAMILY && GlobalFonts.has(requested)
+  // 空值表示自动选择；旧配置里显式写过的内部别名也按自动处理，避免升级后报警
+  const auto = requested === '' || requested === AUTO_FONT_ALIAS
+  const custom = !auto && GlobalFonts.has(requested)
 
   if (custom) {
     regularFamily = requested
     // 系统字体通常不提供独立的“Bold”族名，直接由 canvas 选择粗体字重
     boldFamily = GlobalFonts.has(`${requested} Bold`) ? `${requested} Bold` : requested
   } else {
-    regularFamily = DEFAULT_FONT_FAMILY
-    if (requested !== '' && requested !== DEFAULT_FONT_FAMILY) {
+    regularFamily = AUTO_FONT_ALIAS
+    if (requested !== '' && !auto) {
       logger.warn('[render] 未找到字体 %s，改用自动选择的中文字体', requested)
     }
 

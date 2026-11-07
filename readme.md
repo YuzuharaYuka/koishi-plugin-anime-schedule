@@ -86,7 +86,7 @@ npm i koishi-plugin-anime-schedule
 
 | 配置项 | 默认值 | 说明 |
 | :--- | :--- | :--- |
-| `fontFamily` | `Anime Schedule Sans` | 图片字体，可填本机字体 |
+| `fontFamily` | （留空） | 图片字体，留空自动选择 |
 | `coverMaxEdge` | `650` | 封面解码边长（像素） |
 | `coverLimit` | `0` | 单张图封面数上限 |
 | `coverCacheDays` | `21` | 封面缓存天数 |
