@@ -231,10 +231,11 @@ export const BOLD_FONT_CANDIDATES: string[] = [
 /**
  * JPEG 编码质量。
  *
- * 图片以文字与细线条为主，块状伪影比在照片上明显。取 100 为无损编码，文字边缘最锐利；
- * 体积比 92 约多三成，可调低换取更小体积。
+ * 图片以文字与细线条为主，块状伪影比在照片上明显。1.1.0 的 Chrome JPEG 编码器在 100
+ * 下体积明显增大，90 在保持文字锐利的同时把周表/季表体积压回可用范围；需要极致清晰
+ * 可在控制台调回 100。
  */
-export const DEFAULT_JPEG_QUALITY = 100
+export const DEFAULT_JPEG_QUALITY = 90
 
 /** 深夜档的默认起止时间：开始于当天，结束于次日 */
 export const DEFAULT_NIGHT_RANGE: [string, string] = ['21:00', '06:00']

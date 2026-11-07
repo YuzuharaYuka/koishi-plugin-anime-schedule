@@ -18,22 +18,27 @@ import { HttpClient } from '../services/network'
 const DECODE_WAIT_MS = 5000
 
 /**
- * 解码后画布的最大边长。
+ * 解码后画布的最大边长，也是磁盘缩略图的最大边长。
  *
  * 版面里封面最大画到约 690 物理像素（季表卡片高 292、超采样 3 倍）；原图是 1414×2000，
  * 按原尺寸留在内存里单张 11MB，一次周表（近百张）就是 1GB。配合 `MAX_RENDER_PIXELS`，
  * 周表/季表实际倍率会被压到约 2.2 倍（约 640 像素），672 既覆盖默认 2 倍下的季表封面，
- * 也给 4 倍超采样的详情海报留出余量，同时把单张解码内存压到约 2.5MB。
+ * 也给 4 倍超采样的详情海报留出余量，同时把单张解码内存压到约 1.1–1.3MB。
+ *
+ * 磁盘缓存不再保存接口原图，只保存这个尺寸的 JPEG；冷加载解码的是小图，不再解原图。
  */
 const COVER_MAX_EDGE = 672
+
+/** 磁盘缩略图的 JPEG 质量；封面不会再被放大到超过 672，q90 足够 */
+const COVER_THUMB_QUALITY = 90
 
 /**
  * 磁盘缓存键的版本号。
  *
- * 候选尺寸顺序变更后必须改它：旧缓存里 `l` 地址存的是 150px 的 `c` 图，不改版本会继续命中，
- * 模糊封面要等到 TTL 过期才消失。旧文件由 `prune()` 按 TTL 与数量上限自然清掉。
+ * 缓存格式变更后必须改它：v2 及以前存的是接口原图，v3 起只存插件生成的 672px
+ * JPEG 缩略图。旧文件由 `prune()` 按 TTL 与数量上限自然清掉。
  */
-const COVER_CACHE_VERSION = 2
+const COVER_CACHE_VERSION = 3
 
 /**
  * 单张封面的总时间预算（含多候选地址）。
@@ -131,8 +136,10 @@ export class CoverStore {
   private memoryBytes = 0
   private readonly inflight = new Map<string, Promise<Canvas | null>>()
   private readonly cacheRoot: string
+  private readonly versionPath: string
   private cacheReady = false
   private cacheDisabled = false
+  private versionReady: Promise<void> | null = null
 
   constructor(
     ctx: Context,
@@ -143,6 +150,7 @@ export class CoverStore {
     private http: HttpClient,
   ) {
     this.cacheRoot = resolve(ctx.baseDir, ...COVER_CACHE_DIR)
+    this.versionPath = resolve(this.cacheRoot, '.version')
   }
 
   get enabled(): boolean {
@@ -268,8 +276,8 @@ export class CoverStore {
         this.logger.debug('[render] 封面解码失败: %s', sanitizeUrl(candidate))
         continue
       }
-      // 一律按原始地址落盘，下次直接用缓存，不再重试备用地址
-      void this.writeDiskCache(url, buffer)
+      // 一律按原始地址落盘缩略图，下次直接用缓存，不再重试备用地址
+      void this.writeThumbnail(url, canvas)
       if (candidate !== url) this.logger.debug('[render] 封面改用备用地址成功: %s', sanitizeUrl(candidate))
       return canvas
     }
@@ -303,6 +311,29 @@ export class CoverStore {
 
   // #region 磁盘缓存
 
+  /**
+   * 版本迁移：旧版缓存存的是接口原图，v3 起只存缩略图。
+   *
+   * 用缓存目录里的 `.version` 标记判断；版本变化时整目录清空，避免旧原图继续占空间。
+   * 所有读写都先等待这个 Promise，避免清理与首次写入并发。
+   */
+  private ensureCacheVersion(): Promise<void> {
+    if (this.versionReady) return this.versionReady
+    this.versionReady = (async () => {
+      try {
+        const marker = await fs.readFile(this.versionPath, 'utf8').catch(() => null)
+        if (marker?.trim() === String(COVER_CACHE_VERSION)) return
+        await fs.rm(this.cacheRoot, { recursive: true, force: true }).catch(() => undefined)
+        await fs.mkdir(this.cacheRoot, { recursive: true })
+        await fs.writeFile(this.versionPath, String(COVER_CACHE_VERSION))
+        this.cacheReady = true
+      } catch (error) {
+        this.logger.debug('[render] 封面缓存版本迁移失败: %s', errorMessage(error))
+      }
+    })()
+    return this.versionReady
+  }
+
   private filePath(url: string): string {
     // 键里带上版本：候选尺寸顺序变过之后，旧文件里存的是低清图，不能继续命中
     const hash = createHash('sha1').update(`v${COVER_CACHE_VERSION}|${url}`).digest('hex')
@@ -322,6 +353,7 @@ export class CoverStore {
 
   private async readDiskCache(url: string): Promise<Buffer | null> {
     if (!this.enabled) return null
+    await this.ensureCacheVersion()
     const path = this.filePath(url)
     try {
       const stat = await fs.stat(path)
@@ -333,8 +365,19 @@ export class CoverStore {
     }
   }
 
+  /** 把已缩到 672px 的画布编码成 JPEG 落盘；失败只影响下次冷加载，不影响本次出图 */
+  private async writeThumbnail(url: string, canvas: Canvas): Promise<void> {
+    try {
+      const thumbnail = await canvas.encode('jpeg', COVER_THUMB_QUALITY)
+      await this.writeDiskCache(url, thumbnail)
+    } catch (error) {
+      this.logger.debug('[render] 封面缩略图编码失败，本次仅用内存缓存: %s', errorMessage(error))
+    }
+  }
+
   private async writeDiskCache(url: string, buffer: Buffer): Promise<void> {
     if (!this.enabled) return
+    await this.ensureCacheVersion()
     const path = this.filePath(url)
     const temp = `${path}.tmp`
     try {
@@ -357,6 +400,7 @@ export class CoverStore {
   /** 清理过期的封面缓存，插件启动时调用一次即可 */
   async prune(): Promise<void> {
     if (!this.enabled) return
+    await this.ensureCacheVersion()
     try {
       const ttl = this.cacheDays * 24 * 60 * 60 * 1000
       const files: { path: string; mtimeMs: number }[] = []
