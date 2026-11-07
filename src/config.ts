@@ -256,11 +256,13 @@ export const Config: Schema<Config> = Schema.intersect([
         .default(21),
       jpegQuality: Schema.number()
         .min(1).max(100).step(1)
+        .role('slider')
         .description('JPEG 编码质量（1–100）')
         .default(DEFAULT_JPEG_QUALITY),
       supersample: Schema.number()
-        .min(1).max(MAX_SUPERSAMPLE).step(0.05)
-        .description('超采样倍数（1–5，可填小数）')
+        .min(1).max(MAX_SUPERSAMPLE).step(0.01)
+        .role('slider')
+        .description('超采样倍数（1–5）')
         .default(DEFAULT_SUPERSAMPLE),
     }),
   }).description('图片'),

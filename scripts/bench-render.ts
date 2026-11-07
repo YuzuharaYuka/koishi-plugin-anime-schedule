@@ -23,7 +23,7 @@ import { AiringStatusService } from '../src/services/airing'
 import { Renderer, toRenderPayload } from '../src/render/image'
 import { HttpClient } from '../src/services/network'
 import { Config as ConfigSchema, normalizeConfig, type Config } from '../src/config'
-import { getMessages } from '../src/constants'
+import { DEFAULT_JPEG_QUALITY, DEFAULT_SUPERSAMPLE, getMessages } from '../src/constants'
 import type { Digest } from '../src/types'
 
 const args = process.argv.slice(2)
@@ -34,8 +34,8 @@ const readNumber = (name: string, fallback: number): number => {
   return Number.isFinite(parsed) ? parsed : fallback
 }
 
-const supersample = Math.max(1, Math.min(5, Math.round(readNumber('supersample', 2) * 100) / 100))
-const quality = Math.max(1, Math.min(100, Math.round(readNumber('quality', 100))))
+const supersample = Math.max(1, Math.min(5, Math.round(readNumber('supersample', DEFAULT_SUPERSAMPLE) * 100) / 100))
+const quality = Math.max(1, Math.min(100, Math.round(readNumber('quality', DEFAULT_JPEG_QUALITY))))
 const iters = Math.max(1, Math.round(readNumber('iters', 3)))
 const withCover = !args.includes('--no-cover')
 const coverLimit = Math.max(0, Math.round(readNumber('cover-limit', 0)))

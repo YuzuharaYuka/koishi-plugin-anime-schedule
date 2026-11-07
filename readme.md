@@ -90,8 +90,8 @@ npm i koishi-plugin-anime-schedule
 | `coverMaxEdge` | `672` | 封面解码边长（像素） |
 | `coverLimit` | `0` | 单张图封面数上限 |
 | `coverCacheDays` | `21` | 封面缓存天数 |
-| `jpegQuality` | `100` | JPEG 质量（1–100） |
-| `supersample` | `2` | 超采样倍数，可填小数（1–5） |
+| `jpegQuality` | `90` | JPEG 质量（1–100） |
+| `supersample` | `3` | 超采样倍数（1–5） |
 
 ### 本地化
 

@@ -236,10 +236,10 @@ export const BOLD_FONT_CANDIDATES: string[] = [
 /**
  * JPEG 编码质量。
  *
- * 图片以文字与细线条为主，块状伪影比在照片上明显；手机上看时 q90 会明显发糊，因此默认
- * 保持 100。代价是 1.1.0 的编码器下季表可到 10MB 以上，可在控制台调低换取更小体积。
+ * 图片以文字与细线条为主，块状伪影比在照片上明显；默认 90 兼顾清晰度与发送体积，
+ * 需要更高画质可在控制台用滑块调到 100。
  */
-export const DEFAULT_JPEG_QUALITY = 100
+export const DEFAULT_JPEG_QUALITY = 90
 
 /** 深夜档的默认起止时间：开始于当天，结束于次日 */
 export const DEFAULT_NIGHT_RANGE: [string, string] = ['21:00', '06:00']
@@ -251,9 +251,9 @@ export const DEFAULT_NIGHT_RANGE: [string, string] = ['21:00', '06:00']
  * 得出边缘像素。清晰度主要取决于此：各版面最小字号仅 10~11px，1× 下一个字不足十几个
  * 像素，JPEG 质量再高也无法还原。
  *
- * 2 在清晰度、内存与编码耗时之间较均衡；3 在密集的封面与小字上收益仍可见，5 是收益递减的上限。
+ * 2 更快、更省内存；3 在密集的封面与小字上收益仍可见；5 是收益递减的上限。
  */
-export const DEFAULT_SUPERSAMPLE = 2
+export const DEFAULT_SUPERSAMPLE = 3
 
 /** 超采样倍数的可选上限，与配置项的 `.max()` 保持一致 */
 export const MAX_SUPERSAMPLE = 5
