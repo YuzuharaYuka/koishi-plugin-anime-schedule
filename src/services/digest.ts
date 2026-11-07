@@ -644,8 +644,8 @@ export class DigestService {
   }
 
   /**
-   * 按 AniList 条目 ID 批量取播出状态，并先给没有 `aniList` ID 的条目按标题补一个 ID。
-   * 必须限量：按标题搜索一次一个请求，放开会让周表构建从数秒涨到数分钟并有触发限流的风险。
+   * 按 AniList 条目 ID 批量取播出状态，并给没有 `aniList` ID 的条目按标题补一个 ID。
+   * 标题搜索与已知 ID 的状态查询合并成一次 GraphQL 请求；单次最多补 `TITLE_SEARCH_LIMIT` 部。
    */
   private async airingStatesOf(candidates: AirCandidate[], now: number): Promise<Map<number, AiringState>> {
     if (!this.airing) return new Map()
@@ -660,23 +660,6 @@ export class DigestService {
     }
     const pending = [...missing.values()].sort((a, b) => a.atMs - b.atMs).slice(0, TITLE_SEARCH_LIMIT)
 
-    const resolved: number[] = []
-    const resolvedIds = await this.airing.resolveByTitleBatch(pending.map(({ entry }) => ({
-      title: entry.title,
-      beginMs: entry.beginMs,
-      broadcastMs: entry.broadcastMs,
-    })))
-    pending.forEach(({ entry }, index) => {
-      const id = resolvedIds[index]
-      if (id === null) return
-      entry.aniListId = id
-      resolved.push(id)
-    })
-    if (resolved.length) this.logger.debug('[digest] 按标题补上 %d 个 AniList ID', resolved.length)
-    if (missing.size > pending.length) {
-      this.logger.debug('[digest] 还有 %d 部缺 AniList ID 的条目未处理，留待后续构建', missing.size - pending.length)
-    }
-
     const ids = new Set<number>()
     let cachedSkipped = 0
     for (const candidate of candidates) {
@@ -690,10 +673,32 @@ export class DigestService {
       ids.add(entry.aniListId)
     }
     if (cachedSkipped > 0) this.logger.debug('[digest] 按判定缓存跳过 %d 个 AniList 状态请求', cachedSkipped)
-    if (!ids.size) return new Map()
-    await this.airing.ensure()
+    if (!ids.size && !pending.length) return new Map()
+
     try {
-      return await this.airing.resolve([...ids], this.config.localize.airingTtlHours / 24, now)
+      const { states, titleIds } = await this.airing.resolveWithTitleSearch(
+        [...ids],
+        pending.map(({ entry }) => ({
+          title: entry.title,
+          beginMs: entry.beginMs,
+          broadcastMs: entry.broadcastMs,
+        })),
+        this.config.localize.airingTtlHours / 24,
+        now,
+      )
+
+      const resolved: number[] = []
+      pending.forEach(({ entry }, index) => {
+        const id = titleIds[index]
+        if (id === null) return
+        entry.aniListId = id
+        resolved.push(id)
+      })
+      if (resolved.length) this.logger.debug('[digest] 按标题补上 %d 个 AniList ID', resolved.length)
+      if (missing.size > pending.length) {
+        this.logger.debug('[digest] 还有 %d 部缺 AniList ID 的条目未处理，留待后续构建', missing.size - pending.length)
+      }
+      return states
     } catch (error) {
       this.logger.debug('[digest] AniList 状态查询失败，本次按逐集档期判定: %s', errorMessage(error))
       return new Map()

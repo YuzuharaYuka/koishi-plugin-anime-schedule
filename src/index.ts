@@ -189,6 +189,9 @@ export function apply(ctx: Context, rawConfig: Config) {
       digest.verdicts.save().catch((error) => {
         logger.debug('[lifecycle] 保存判定缓存失败: %s', errorMessage(error))
       }),
+      airing.save().catch((error) => {
+        logger.debug('[lifecycle] 保存 AniList ID 映射失败: %s', errorMessage(error))
+      }),
     ])
   })
 }

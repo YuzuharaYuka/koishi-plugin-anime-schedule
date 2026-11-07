@@ -9,13 +9,18 @@
  * 服务）。速率限制：文档写 90 次/分钟，**实测响应头是 `x-ratelimit-limit: 30`**，超限会 429
  * 封禁 1 分钟、严重故障时 403，因此请求**串行 + 最小间隔**，429/403 后进入冷却、期间只返回缓存。
  */
+import { promises as fs } from 'fs'
+import { dirname, resolve } from 'path'
 import type { Context, Logger } from 'koishi'
 import type { AiringState, AniListStatus } from '../types'
 import {
   ANILIST_API_URL,
   ANILIST_BATCH_SIZE,
   ANILIST_COOLDOWN_MS,
+  ANILIST_ID_CACHE_FILE,
+  ANILIST_ID_CACHE_VERSION,
   ANILIST_MIN_INTERVAL_MS,
+  DATA_DIR,
 } from '../constants'
 import { errorMessage, errorStatus, unwrapPayload } from '../utils'
 import type { MatchCandidate, MatchTarget } from '../data/anilist-match'
@@ -35,9 +40,7 @@ interface AniListMedia {
   coverImage?: { extraLarge?: string | null; large?: string | null } | null
 }
 
-const QUERY = `query ($ids: [Int]) {
-  Page(page: 1, perPage: 50) {
-    media(id_in: $ids, type: ANIME) {
+const MEDIA_FIELDS = `
       id
       status
       episodes
@@ -46,6 +49,12 @@ const QUERY = `query ($ids: [Int]) {
       airingSchedule(perPage: 50) { nodes { episode airingAt } }
       nextAiringEpisode { episode airingAt }
       coverImage { extraLarge large }
+`
+
+const QUERY = `query ($ids: [Int]) {
+  Page(page: 1, perPage: ${ANILIST_BATCH_SIZE}) {
+    media(id_in: $ids, type: ANIME) {
+      ${MEDIA_FIELDS}
     }
   }
 }`
@@ -53,13 +62,12 @@ const QUERY = `query ($ids: [Int]) {
 /**
  * 按标题搜索候选，用于给「bangumi-data 没带 `aniList` ID」的条目补 ID。
  * 多出的 `title` 与 `synonyms` 供匹配使用，`startDate` 与 `airingSchedule` 用于双重校验。
+ * 带上与状态查询相同的字段，命中后可以直接构出 `AiringState`，不必再单独查一次。
  */
 const SEARCH_FIELDS = `
-      id
+      ${MEDIA_FIELDS}
       title { native romaji english }
       synonyms
-      startDate { year month day }
-      airingSchedule(perPage: 50) { nodes { episode airingAt } }
 `
 
 /** 一次标题搜索最多看几个候选 */
@@ -78,6 +86,25 @@ function buildSearchQuery(count: number): string {
     `q${index}: Page(page: 1, perPage: ${SEARCH_LIMIT}) { media(search: $s${index}, type: ANIME) { ${SEARCH_FIELDS} } }`
   )).join('\n  ')
   return `query (${variables}) {\n  ${pages}\n}`
+}
+
+/** 状态查询与标题搜索合并成一次请求，前者用 `statuses` alias，后者用 `q0...` */
+function buildCombinedQuery(titleCount: number, withStatus: boolean): string {
+  const variables: string[] = []
+  if (withStatus) variables.push('$ids: [Int]')
+  for (let index = 0; index < titleCount; index++) variables.push(`$s${index}: String`)
+  const parts: string[] = []
+  if (withStatus) {
+    parts.push(
+      `statuses: Page(page: 1, perPage: ${ANILIST_BATCH_SIZE}) { media(id_in: $ids, type: ANIME) { ${MEDIA_FIELDS} } }`,
+    )
+  }
+  for (let index = 0; index < titleCount; index++) {
+    parts.push(
+      `q${index}: Page(page: 1, perPage: ${SEARCH_LIMIT}) { media(search: $s${index}, type: ANIME) { ${SEARCH_FIELDS} } }`,
+    )
+  }
+  return `query (${variables.join(', ')}) {\n  ${parts.join('\n  ')}\n}`
 }
 
 /**
@@ -101,6 +128,13 @@ export class AiringStatusService {
    * 也是进程内缓存：bangumi-data 约三分之一的条目没带 `aniList` ID，搜到之后同一进程内不再重复搜索。
    */
   private readonly idByTitle = new Map<string, number | null>()
+  /** 标题 → ID 映射的落盘路径 */
+  private readonly idCachePath: string
+  private idLoaded = false
+  private idLoadPromise: Promise<void> | null = null
+  private idDirty = false
+  private idSavePromise: Promise<void> | null = null
+  private idSaveTimer: (() => void) | null = null
   /** 已经用掉的标题搜索次数，见 `TITLE_SEARCH_BUDGET` */
   private titleSearches = 0
   /** 冷却截止时刻：收到 429 后到这时刻之前不再发请求 */
@@ -114,16 +148,89 @@ export class AiringStatusService {
     private ctx: Context,
     private logger: Logger,
     private http: HttpClient,
-  ) {}
+  ) {
+    this.idCachePath = resolve(ctx.baseDir, ...DATA_DIR, ANILIST_ID_CACHE_FILE)
+  }
 
   /** 当前是否处于限流冷却中 */
   get coolingDown(): boolean {
     return Date.now() < this.cooldownUntil
   }
 
-  /** 无需预热（缓存只在内存里），保留此方法让调用方写法统一 */
+  /** 载入标题 → ID 映射；只读一次，供标题搜索复用 */
   ensure(): Promise<void> {
-    return Promise.resolve()
+    if (this.idLoaded) return Promise.resolve()
+    if (!this.idLoadPromise) this.idLoadPromise = this.loadIds()
+    return this.idLoadPromise
+  }
+
+  /**
+   * 只持久化「标题键 → 数字 ID」，不落盘 AniList 状态、排期或封面。
+   * 这样重启后不必重新做标题搜索，同时不把 AniList 当数据存储服务使用。
+   */
+  private async loadIds(): Promise<void> {
+    try {
+      const text = await fs.readFile(this.idCachePath, 'utf8')
+      const parsed = JSON.parse(text) as { version?: number; entries?: Record<string, unknown> }
+      if (parsed?.version === ANILIST_ID_CACHE_VERSION && parsed.entries) {
+        for (const [key, value] of Object.entries(parsed.entries)) {
+          if (typeof value === 'number' && Number.isFinite(value) && value > 0) {
+            this.idByTitle.set(key, Math.trunc(value))
+          }
+        }
+        this.logger.debug('[airing] 标题 ID 映射载入完成，条目数: %d', this.idByTitle.size)
+      } else if (parsed) {
+        this.logger.info('[airing] 标题 ID 映射版本 %s 与当前 %d 不符，重新收集', parsed.version ?? '(无)', ANILIST_ID_CACHE_VERSION)
+      }
+    } catch (error) {
+      if ((error as { code?: string }).code !== 'ENOENT') {
+        this.logger.warn('[airing] 读取标题 ID 映射失败，将重新收集:', error)
+      }
+    } finally {
+      this.idLoaded = true
+    }
+  }
+
+  /** 记录一次标题匹配；只有命中时标记脏数据并延迟落盘 */
+  private rememberId(key: string, id: number | null): void {
+    this.idByTitle.set(key, id)
+    if (id !== null) {
+      this.idDirty = true
+      this.scheduleSave()
+    }
+  }
+
+  private scheduleSave(): void {
+    if (this.idSaveTimer) return
+    this.idSaveTimer = this.ctx.setTimeout(() => {
+      this.idSaveTimer = null
+      void this.save()
+    }, 3000)
+  }
+
+  /** 把标题映射写回磁盘；dispose 时会再调用一次 */
+  async save(): Promise<void> {
+    if (!this.idDirty) return
+    if (this.idSavePromise) return this.idSavePromise
+    this.idDirty = false
+    this.idSavePromise = (async () => {
+      try {
+        const entries: Record<string, number> = {}
+        for (const [key, id] of this.idByTitle) {
+          if (id !== null) entries[key] = id
+        }
+        await fs.mkdir(dirname(this.idCachePath), { recursive: true })
+        const tmp = `${this.idCachePath}.tmp`
+        await fs.writeFile(tmp, JSON.stringify({ version: ANILIST_ID_CACHE_VERSION, entries }), 'utf8')
+        await fs.rename(tmp, this.idCachePath)
+      } catch (error) {
+        this.idDirty = true
+        this.logger.debug('[airing] 保存标题 ID 映射失败: %s', errorMessage(error))
+      } finally {
+        this.idSavePromise = null
+      }
+    })()
+    return this.idSavePromise
   }
 
   private isFresh(entry: AiringState, ttlDays: number, now = Date.now()): boolean {
@@ -159,6 +266,7 @@ export class AiringStatusService {
    * 一次 GraphQL 请求最多处理本次构建的 `TITLE_SEARCH_LIMIT` 部，见 `buildSearchQuery`。
    */
   async resolveByTitleBatch(targets: MatchTarget[]): Promise<(number | null)[]> {
+    await this.ensure()
     const keys = targets.map((target) => this.titleKey(target))
     const readCache = () => keys.map((key) => (key ? this.idByTitle.get(key) ?? null : null))
     const result = readCache()
@@ -187,7 +295,7 @@ export class AiringStatusService {
       if (candidates === null) return
       const matched = matchByTitle(item.target, candidates)
       const id = matched?.candidate.id ?? null
-      this.idByTitle.set(item.key, id)
+      this.rememberId(item.key, id)
       if (id !== null) {
         hits++
         this.logger.debug(
@@ -241,11 +349,15 @@ export class AiringStatusService {
    * @param now 判定「已播出到第几话」的基准时刻。由调用方注入而非就地取 `Date.now()`，
    *   否则同一份数据在两次构建之间会得到不同的 `airedEpisodes`，快照无法复现。
    */
-  async resolve(aniListIds: number[], ttlDays: number, now = Date.now()): Promise<Map<number, AiringState>> {
+  /** 把 ID 分成「已有缓存」与「需要请求」两组；过期条目也先返回旧值 */
+  private collectStates(
+    aniListIds: number[],
+    ttlDays: number,
+    now: number,
+  ): { result: Map<number, AiringState>; wanted: number[] } {
     const result = new Map<number, AiringState>()
     const wanted: number[] = []
     const seen = new Set<number>()
-
     for (const id of aniListIds) {
       if (!Number.isFinite(id) || seen.has(id)) continue
       seen.add(id)
@@ -254,10 +366,21 @@ export class AiringStatusService {
         wanted.push(id)
         continue
       }
-      // 过期条目先返回旧值，避免一次请求失败就没有数据可用
       result.set(id, cached)
       if (!this.isFresh(cached, ttlDays, now)) wanted.push(id)
     }
+    return { result, wanted }
+  }
+
+  /**
+   * 批量取 AniList 状态，未命中的 ID 不会出现在结果里（调用方按「取不到就不判定」处理）。
+   *
+   * @param now 判定「已播出到第几话」的基准时刻。由调用方注入而非就地取 `Date.now()`，
+   *   否则同一份数据在两次构建之间会得到不同的 `airedEpisodes`，快照无法复现。
+   */
+  async resolve(aniListIds: number[], ttlDays: number, now = Date.now()): Promise<Map<number, AiringState>> {
+    await this.ensure()
+    const { result, wanted } = this.collectStates(aniListIds, ttlDays, now)
     if (!wanted.length) return result
 
     if (this.coolingDown) {
@@ -287,6 +410,122 @@ export class AiringStatusService {
       Date.now() - started,
     )
     return result
+  }
+
+  /**
+   * 一次请求同时完成：已知 ID 的状态查询 + 缺失 ID 的标题搜索。
+   *
+   * 返回 `titleIds` 与 `targets` 等长，供调用方把新 ID 写回索引条目；`states` 包含
+   * 已知 ID 与搜索命中 ID 的状态。超过 50 部的状态会退回普通 `resolve()` 再补一批。
+   */
+  async resolveWithTitleSearch(
+    aniListIds: number[],
+    targets: MatchTarget[],
+    ttlDays: number,
+    now = Date.now(),
+  ): Promise<{ states: Map<number, AiringState>; titleIds: (number | null)[] }> {
+    await this.ensure()
+    const keys = targets.map((target) => this.titleKey(target))
+    const readTitleIds = () => keys.map((key) => (key ? this.idByTitle.get(key) ?? null : null))
+    const cachedTitleIds = readTitleIds().filter((id): id is number => id !== null)
+    // 已落盘的标题映射也要一起取状态，否则条目只有 ID 没有状态，闸门 2 无法判定
+    const allIds = [...new Set([...aniListIds, ...cachedTitleIds])]
+    const { result: states, wanted } = this.collectStates(allIds, ttlDays, now)
+
+    const pending: { key: string; target: MatchTarget }[] = []
+    const seen = new Set<string>()
+    for (let index = 0; index < targets.length; index++) {
+      const key = keys[index]
+      if (!key || this.idByTitle.has(key) || seen.has(key)) continue
+      if (this.titleSearches + pending.length >= TITLE_SEARCH_BUDGET) break
+      seen.add(key)
+      pending.push({ key, target: targets[index] })
+    }
+    if (!wanted.length && !pending.length) return { states, titleIds: readTitleIds() }
+    if (this.coolingDown) return { states, titleIds: readTitleIds() }
+    if (!pending.length) {
+      return { states: await this.resolve(allIds, ttlDays, now), titleIds: readTitleIds() }
+    }
+    this.titleSearches += pending.length
+
+    const first = wanted.slice(0, ANILIST_BATCH_SIZE)
+    const rest = wanted.slice(ANILIST_BATCH_SIZE)
+    const started = Date.now()
+    const payload = await this.enqueue(() => this.fetchCombined(first, pending.map((item) => item.target.title)))
+    if (!payload) return { states, titleIds: readTitleIds() }
+
+    for (const item of payload.statuses) {
+      const entry = this.toState(item, now)
+      if (!entry) continue
+      this.remember(entry)
+      states.set(entry.aniListId, entry)
+    }
+
+    let hits = 0
+    const needStatus: number[] = []
+    pending.forEach((item, index) => {
+      const candidates = payload.titles[index]
+      if (candidates === null) return
+      const matched = matchByTitle(item.target, candidates)
+      const id = matched?.candidate.id ?? null
+      this.rememberId(item.key, id)
+      if (id === null) return
+      hits++
+      // 搜索字段与状态查询字段一致，命中后可以直接构状态；个别解析失败再补查一次
+      const state = matched?.candidate ? this.toState(matched.candidate as unknown as AniListMedia, now) : null
+      if (state) {
+        this.remember(state)
+        states.set(state.aniListId, state)
+      } else if (!states.has(id)) {
+        needStatus.push(id)
+      }
+    })
+    this.logger.debug(
+      '[airing] 合并查询: 状态 %d 部，标题 %d 部，命中 %d 部（%dms）',
+      first.length,
+      pending.length,
+      hits,
+      Date.now() - started,
+    )
+
+    const followup = [...new Set([...rest, ...needStatus])].filter((id) => !states.has(id))
+    if (followup.length) {
+      const extra = await this.resolve(followup, ttlDays, now)
+      for (const [id, state] of extra) states.set(id, state)
+    }
+    return { states, titleIds: readTitleIds() }
+  }
+
+  /** 合并查询：statuses alias + 每个标题一个 qN alias；返回原始 media 列表 */
+  private async fetchCombined(
+    ids: number[],
+    titles: string[],
+  ): Promise<{ statuses: AniListMedia[]; titles: (MatchCandidate[] | null)[] } | null> {
+    try {
+      const variables: Record<string, unknown> = {}
+      if (ids.length) variables.ids = ids
+      titles.forEach((title, index) => { variables[`s${index}`] = title })
+      const raw = await this.http.post<unknown>(ANILIST_API_URL, {
+        query: buildCombinedQuery(titles.length, ids.length > 0),
+        variables,
+      }, { timeout: 20000 })
+      const payload = unwrapPayload(raw) as {
+        data?: Record<string, { media?: MatchCandidate[] | AniListMedia[] }> | null
+      } | null
+      const data = payload?.data
+      if (!data) return null
+      return {
+        statuses: (data.statuses?.media as AniListMedia[] | undefined) ?? [],
+        titles: titles.map((_, index) => {
+          const page = data[`q${index}`]
+          if (!page) return null
+          return Array.isArray(page.media) ? page.media as MatchCandidate[] : []
+        }),
+      }
+    } catch (error) {
+      this.handleRequestError(error)
+      return null
+    }
   }
 
   /**

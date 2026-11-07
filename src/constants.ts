@@ -33,6 +33,10 @@ export const ANILIST_MIN_INTERVAL_MS = 1200
  */
 export const ANILIST_COOLDOWN_MS = 5 * 60 * 1000
 
+/** 标题 → AniList ID 的本地映射文件名与版本（只存数字 ID，不存状态/排期） */
+export const ANILIST_ID_CACHE_FILE = 'anilist-ids.json'
+export const ANILIST_ID_CACHE_VERSION = 1
+
 /**
  * bangumi-data 索引。
  *
