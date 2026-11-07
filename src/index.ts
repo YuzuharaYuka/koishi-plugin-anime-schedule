@@ -42,7 +42,7 @@ export const inject = { required: ['database', 'http'] }
 export { ConfigSchema as Config }
 
 export const usage = `
-番剧更新表与订阅提醒，提供每日、深夜、本周与本季四种推送。
+番剧更新表与订阅提醒，提供日、周、季三张表，支持定时推送、订阅、搜索与详情。
 
 ### 指令
 
@@ -66,11 +66,11 @@ export const usage = `
 
 ### 注意
 
-- 首次使用执行 \`anime.on\` 开启定时推送。
-- 推送类型为 \`daily\`、\`night\`、\`weekly\`、\`season\`，发送时间与深夜档范围在控制台配置。
-- 季度支持 \`2026-07\`、\`26夏\`，\`-o [偏移]\` 查看其他季度。
-- 每日、深夜与本周只列仍在播出的作品；本季表收录该季首播的 TV / WEB 动画。
-- 封面与评分不可达时，可安装并启用 **[proxy-agent](/market/?keyword=proxy-agent)** 配置代理。
+- 首次使用执行 \`anime.on\` 开启定时推送
+- 推送类型为 \`daily\`、\`night\`、\`weekly\`、\`season\`，发送时间与深夜档范围在控制台配置
+- 季度表支持 \`2026-07\`、\`26夏\`，\`-o [偏移]\` 查看其他季度
+- 每日、深夜与本周只列仍在播出的作品；本季表收录该季首播的 TV / WEB 动画
+- 封面与评分不可达时，可安装并启用 **[proxy-agent](/market/?keyword=proxy-agent)** 配置代理
 `
 
 const logger = new Logger(PLUGIN_NAME)
