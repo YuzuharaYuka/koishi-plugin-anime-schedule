@@ -46,8 +46,8 @@ const FOLLOWING_WINDOW_DAYS = 14
  *  取 45 天：季表窗口有 10 天提前量，季末提前放送与延期开播都可能偏出两周。 */
 const SEASON_AIR_MATCH_DAYS = 45
 
-/** 单次构建最多按标题搜多少条 AniList 补 ID（按标题搜一次只能一个请求，放开会把周表构建
- *  从数秒拖到三分多钟）；只限单次构建，更硬的总额度由 `AiringStatusService` 按进程控制。 */
+/** 单次构建最多按标题搜多少条 AniList 补 ID。现在按批请求，限制的是作品数而不是请求数；
+ *  只限单次构建，更硬的总额度由 `AiringStatusService` 按进程控制。 */
 const TITLE_SEARCH_LIMIT = 8
 
 /**
@@ -661,16 +661,17 @@ export class DigestService {
     const pending = [...missing.values()].sort((a, b) => a.atMs - b.atMs).slice(0, TITLE_SEARCH_LIMIT)
 
     const resolved: number[] = []
-    for (const { entry } of pending) {
-      const id = await this.airing.resolveByTitle({
-        title: entry.title,
-        beginMs: entry.beginMs,
-        broadcastMs: entry.broadcastMs,
-      })
-      if (id === null) continue
+    const resolvedIds = await this.airing.resolveByTitleBatch(pending.map(({ entry }) => ({
+      title: entry.title,
+      beginMs: entry.beginMs,
+      broadcastMs: entry.broadcastMs,
+    })))
+    pending.forEach(({ entry }, index) => {
+      const id = resolvedIds[index]
+      if (id === null) return
       entry.aniListId = id
       resolved.push(id)
-    }
+    })
     if (resolved.length) this.logger.debug('[digest] 按标题补上 %d 个 AniList ID', resolved.length)
     if (missing.size > pending.length) {
       this.logger.debug('[digest] 还有 %d 部缺 AniList ID 的条目未处理，留待后续构建', missing.size - pending.length)
@@ -804,11 +805,20 @@ export class DigestService {
   }
 
   /** 按 Bangumi 条目 ID 批量取详情 */
-  private async subjectsOf(candidates: AirCandidate[]): Promise<Map<number, LocalizeCacheEntry>> {
+  /**
+   * 按 Bangumi 条目 ID 批量取展示详情（标题、封面、评分）。
+   *
+   * 默认不取逐集档期：展示层用不到它，闸门 3 需要时显式传 `true`。这样 AniList 已定论的
+   * 作品就不必为展示多付一次 `/v0/episodes` 请求。
+   */
+  private async subjectsOf(
+    candidates: AirCandidate[],
+    wantEpisodeTimes = false,
+  ): Promise<Map<number, LocalizeCacheEntry>> {
     const ids = candidates
       .map((candidate) => candidate.entry.bangumiId)
       .filter((id): id is number => id !== null)
-    return this.localizer.localizeByIds(ids)
+    return this.localizer.localizeByIds(ids, wantEpisodeTimes)
   }
 
   /**
@@ -827,8 +837,8 @@ export class DigestService {
       // AniList 已表态（同一季）→ 闸门 3 不参与，详情不必取
       return !(state && this.isSameAniListSeason(state, candidate.entry.broadcastMs))
     })
-    if (wanted.length === candidates.length) return this.subjectsOf(candidates)
-    const subjects = await this.subjectsOf(wanted)
+    if (wanted.length === candidates.length) return this.subjectsOf(candidates, true)
+    const subjects = await this.subjectsOf(wanted, true)
     this.logger.debug(
       '[digest] 闸门 3：%d 部幸存者中只有 %d 部需要 Bangumi 逐集档期（其余由 AniList 定论）',
       candidates.length,

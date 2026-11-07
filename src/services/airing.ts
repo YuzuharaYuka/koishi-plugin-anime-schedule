@@ -54,24 +54,35 @@ const QUERY = `query ($ids: [Int]) {
  * 按标题搜索候选，用于给「bangumi-data 没带 `aniList` ID」的条目补 ID。
  * 多出的 `title` 与 `synonyms` 供匹配使用，`startDate` 与 `airingSchedule` 用于双重校验。
  */
-const SEARCH_QUERY = `query ($search: String, $perPage: Int) {
-  Page(page: 1, perPage: $perPage) {
-    media(search: $search, type: ANIME) {
+const SEARCH_FIELDS = `
       id
       title { native romaji english }
       synonyms
       startDate { year month day }
       airingSchedule(perPage: 50) { nodes { episode airingAt } }
-    }
-  }
-}`
+`
 
 /** 一次标题搜索最多看几个候选 */
 const SEARCH_LIMIT = 8
 
 /**
- * 每个进程最多按标题搜索多少次。按标题搜索只能一次一个请求，而一次构建会多次调用
- * `airingStatesOf`，因此按**进程**限量——它是「整季总共要新认识多少部作品」，而非「每次构建多少」。
+ * 用 GraphQL alias 把多个标题搜索塞进一次请求。
+ *
+ * AniList 的 `Page.media(search:)` 一次只能搜一个标题；逐部调用时，排队最小间隔
+ * （`ANILIST_MIN_INTERVAL_MS`）会把 8 部作品拖成约 10 秒。alias 让它们共享一次请求和
+ * 一次排队等待，请求数从 N 降到 1。
+ */
+function buildSearchQuery(count: number): string {
+  const variables = Array.from({ length: count }, (_, index) => `$s${index}: String`).join(', ')
+  const pages = Array.from({ length: count }, (_, index) => (
+    `q${index}: Page(page: 1, perPage: ${SEARCH_LIMIT}) { media(search: $s${index}, type: ANIME) { ${SEARCH_FIELDS} } }`
+  )).join('\n  ')
+  return `query (${variables}) {\n  ${pages}\n}`
+}
+
+/**
+ * 每个进程最多按标题搜索多少部作品。额度按**作品数**而不是请求数计：现在一次 GraphQL
+ * 请求可带多个 alias，但「整季总共要新认识多少部」才是真正需要控制的量。
  * 搜过的结果（含「搜不到」）一直留在内存里。
  */
 const TITLE_SEARCH_BUDGET = 24
@@ -139,46 +150,86 @@ export class AiringStatusService {
    * 校验交给 `matchByTitle`：标题相等 + 首播日期相近，缺一不可。
    */
   async resolveByTitle(target: MatchTarget): Promise<number | null> {
-    const key = this.titleKey(target)
-    if (!key) return null
-    const cached = this.idByTitle.get(key)
-    if (cached !== undefined) return cached
-    if (this.coolingDown) return null
-    if (this.titleSearches >= TITLE_SEARCH_BUDGET) {
-      this.logger.debug('[airing] 标题搜索额度已用完（%d 次），%s 本次按推算排期', TITLE_SEARCH_BUDGET, target.title)
-      return null
-    }
-    this.titleSearches++
-
-    const media = await this.enqueue(() => this.searchByTitle(target.title))
-    if (media === null) return null // 限流或服务不可用，本次不补
-    const matched = matchByTitle(target, media)
-    const id = matched?.candidate.id ?? null
-    this.idByTitle.set(key, id)
-    if (id !== null) {
-      this.logger.debug(
-        '[airing] 按标题补上 AniList ID: %s → #%d（首播差 %s 天，时刻差 %s 小时）',
-        target.title,
-        id,
-        matched?.dayGap?.toFixed(0) ?? '?',
-        matched?.hourGap?.toFixed(1) ?? '?',
-      )
-    }
-    return id
+    const [id] = await this.resolveByTitleBatch([target])
+    return id ?? null
   }
 
-  /** 按标题搜候选；失败返回 null（与「搜不到」区分开，后者是空数组） */
-  private async searchByTitle(title: string): Promise<MatchCandidate[] | null> {
+  /**
+   * 批量按标题补 AniList ID。返回值与 `targets` 等长；缓存命中、额度耗尽或请求失败的位置为 null。
+   * 一次 GraphQL 请求最多处理本次构建的 `TITLE_SEARCH_LIMIT` 部，见 `buildSearchQuery`。
+   */
+  async resolveByTitleBatch(targets: MatchTarget[]): Promise<(number | null)[]> {
+    const keys = targets.map((target) => this.titleKey(target))
+    const readCache = () => keys.map((key) => (key ? this.idByTitle.get(key) ?? null : null))
+    const result = readCache()
+    if (!targets.length || this.coolingDown) return result
+
+    const pending: { key: string; target: MatchTarget }[] = []
+    const seen = new Set<string>()
+    for (let index = 0; index < targets.length; index++) {
+      const key = keys[index]
+      if (!key || this.idByTitle.has(key) || seen.has(key)) continue
+      if (this.titleSearches + pending.length >= TITLE_SEARCH_BUDGET) break
+      seen.add(key)
+      pending.push({ key, target: targets[index] })
+    }
+    if (!pending.length) return result
+    this.titleSearches += pending.length
+
+    const started = Date.now()
+    const media = await this.enqueue(() => this.searchByTitleBatch(pending.map((item) => item.target.title)))
+    if (!media) return result // 限流或服务不可用，本次不补
+
+    let hits = 0
+    pending.forEach((item, index) => {
+      const candidates = media[index]
+      // 整批失败或单个 alias 缺失时保持未缓存，留给后续构建重试
+      if (candidates === null) return
+      const matched = matchByTitle(item.target, candidates)
+      const id = matched?.candidate.id ?? null
+      this.idByTitle.set(item.key, id)
+      if (id !== null) {
+        hits++
+        this.logger.debug(
+          '[airing] 按标题补上 AniList ID: %s → #%d（首播差 %s 天，时刻差 %s 小时）',
+          item.target.title,
+          id,
+          matched?.dayGap?.toFixed(0) ?? '?',
+          matched?.hourGap?.toFixed(1) ?? '?',
+        )
+      }
+    })
+    this.logger.debug(
+      '[airing] 标题搜索: 请求 %d 部，命中 %d 部（%dms）',
+      pending.length,
+      hits,
+      Date.now() - started,
+    )
+    return readCache()
+  }
+
+  /**
+   * 一次请求搜多个标题；成功但没有候选的 alias 返回 []，请求/解析失败返回 null。
+   * 部分 alias 缺失（GraphQL 局部错误）也返回 null，避免把临时失败当成「确定搜不到」缓存。
+   */
+  private async searchByTitleBatch(titles: string[]): Promise<(MatchCandidate[] | null)[] | null> {
     try {
+      const variables = Object.fromEntries(titles.map((title, index) => [`s${index}`, title]))
       const raw = await this.http.post<unknown>(ANILIST_API_URL, {
-        query: SEARCH_QUERY,
-        variables: { search: title, perPage: SEARCH_LIMIT },
+        query: buildSearchQuery(titles.length),
+        variables,
       }, { timeout: 20000 })
-      const payload = unwrapPayload(raw) as { data?: { Page?: { media?: MatchCandidate[] } } } | null
-      return payload?.data?.Page?.media ?? []
+      const payload = unwrapPayload(raw) as {
+        data?: Record<string, { media?: MatchCandidate[] }> | null
+      } | null
+      const data = payload?.data
+      if (!data) return null
+      return titles.map((_, index) => {
+        const page = data[`q${index}`]
+        if (!page) return null
+        return Array.isArray(page.media) ? page.media : []
+      })
     } catch (error) {
-      // 只有「成功响应但没有候选」才是 []；网络/解析失败必须返回 null，
-      // 否则会被 resolveByTitle 当成「确定搜不到」永久写入 idByTitle。
       this.handleRequestError(error)
       return null
     }
