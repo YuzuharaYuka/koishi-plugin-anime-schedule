@@ -1311,8 +1311,10 @@ export class DigestService {
 
     // 每条定位到首播那一场：集数恒为第 1 集
     const rows = premieres.map((entry) => {
-      const expected = entry.broadcastMs ?? entry.beginMs ?? 0
-      const at = this.seasonAirMs(entry, expected, states)
+      // 季表按「开播批次」归档，优先用 begin 而不是每周放送时刻；后者对分割放送/续作
+      // 常指向另一季，会把 2015/2019 的排期当成 2020 春的首播
+      const expected = entry.beginMs ?? entry.broadcastMs ?? 0
+      const at = this.seasonAirMs(entry, expected, states, window)
       const candidate: AirCandidate = { entry, atMs: at, episode: 1 }
       const subject = entry.bangumiId !== null ? subjects.get(entry.bangumiId) : undefined
       return { at, item: this.toItem(candidate, subject, subscribed, this.airingStateOf(entry, states)) }
@@ -1628,17 +1630,27 @@ export class DigestService {
    * 季表窗口是整季三个月、一部作品在窗口内有几十场，不能用 `coversWindow`（季表几乎必然为真）。
    * 这里找**离我们算的首播最近的一场**并限定容差：差得远说明那条记录讲的是别的季度，回退索引层。
    */
-  private seasonAirMs(entry: IndexEntry, fallback: number, states: Map<number, AiringState>): number {
+  /**
+   * 季表首播时刻：只认 AniList 的**第 1 集**，且必须落在本季窗口内。
+   *
+   * 旧实现取「离 fallback 最近的一集」，续作/分割放送的 AniList 记录里可能命中另一季
+   * 的第 12 集，导致 2020 春表里出现 2015、2019 或 1 月/12 月的日期；也不能用
+   * `broadcastMs` 当 fallback，它表示每周放送槽位，不等同于本季首播。
+   */
+  private seasonAirMs(
+    entry: IndexEntry,
+    fallback: number,
+    states: Map<number, AiringState>,
+    window: { startMs: number; endMs: number },
+  ): number {
     const state = entry.aniListId === null ? undefined : states.get(entry.aniListId)
     if (!state?.schedule.length) return fallback
 
-    let nearest: ScheduledEpisode | null = null
-    for (const episode of state.schedule) {
-      if (!nearest || Math.abs(episode.atMs - fallback) < Math.abs(nearest.atMs - fallback)) nearest = episode
-    }
-    if (!nearest) return fallback
-    if (Math.abs(nearest.atMs - fallback) > SEASON_AIR_MATCH_DAYS * 86400000) return fallback
-    return nearest.atMs
+    const premiere = state.schedule.find((episode) => episode.episode === 1)
+    if (!premiere) return fallback
+    if (premiere.atMs < window.startMs || premiere.atMs >= window.endMs) return fallback
+    if (Math.abs(premiere.atMs - fallback) > SEASON_AIR_MATCH_DAYS * 86400000) return fallback
+    return premiere.atMs
   }
 
   /**
