@@ -38,7 +38,7 @@
   },
   "dependencies": {
     "@napi-rs/canvas": "^1.0.10",
-    "bangumi-data": "^0.3.234"
+    "bangumi-data": "^0.3.235"
   },
   "koishi": {
     "description": {
