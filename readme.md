@@ -87,6 +87,7 @@ npm i koishi-plugin-anime-schedule
 | 配置项 | 默认值 | 说明 |
 | :--- | :--- | :--- |
 | `fontFamily` | `Anime Schedule Sans` | 图片字体，可填本机字体 |
+| `coverMaxEdge` | `672` | 封面解码边长（像素） |
 | `coverLimit` | `0` | 单张图封面数上限 |
 | `coverCacheDays` | `21` | 封面缓存天数 |
 | `jpegQuality` | `100` | JPEG 质量（1–100） |
@@ -129,6 +130,8 @@ npm i koishi-plugin-anime-schedule
 **老番出现在今日表？** 条目仍在更新，或上游数据尚未完结。
 
 **封面或评分一直加载失败？** 通常是网络无法访问 Bangumi 图床或接口，安装 [proxy-agent](/market/?keyword=proxy-agent) 并配置代理。
+
+**封面看起来模糊？** 把 `coverMaxEdge` 调到 1024；会占用更多内存和磁盘。
 
 **图片生成很慢或占用内存很高？** 调低 `supersample`、`jpegQuality`，或把 `coverLimit` 设为 40 左右。
 

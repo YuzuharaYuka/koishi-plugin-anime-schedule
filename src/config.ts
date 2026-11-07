@@ -1,6 +1,9 @@
 import { Schema } from 'koishi'
 import {
   COVER_CONCURRENCY,
+  COVER_MAX_EDGE_DEFAULT,
+  COVER_MAX_EDGE_MAX,
+  COVER_MAX_EDGE_MIN,
   DEFAULT_FONT_FAMILY,
   DEFAULT_JPEG_QUALITY,
   DEFAULT_SCORE_TTL_HOURS,
@@ -67,6 +70,8 @@ export interface Config {
 
   render: {
     fontFamily: string
+    /** 封面解码与磁盘缩略图的最大边长（像素） */
+    coverMaxEdge: number
     /** 单张番组表图最多加载几张封面，0 表示不限制 */
     coverLimit: number
     coverConcurrency: number
@@ -233,6 +238,10 @@ export const Config: Schema<Config> = Schema.intersect([
       fontFamily: Schema.string()
         .description('图片字体，可填本机字体')
         .default(DEFAULT_FONT_FAMILY),
+      coverMaxEdge: Schema.number()
+        .min(COVER_MAX_EDGE_MIN).max(COVER_MAX_EDGE_MAX).step(32)
+        .description('封面解码边长（像素）')
+        .default(COVER_MAX_EDGE_DEFAULT),
       coverLimit: Schema.number()
         .min(0).step(1)
         .description('单张图最多加载几张封面，0 不限')
@@ -430,6 +439,10 @@ export function normalizeConfig(config: Config): Config {
     },
     render: {
       fontFamily: config.render?.fontFamily?.trim() || DEFAULT_FONT_FAMILY,
+      coverMaxEdge: Math.min(
+        COVER_MAX_EDGE_MAX,
+        int(config.render?.coverMaxEdge, COVER_MAX_EDGE_DEFAULT, COVER_MAX_EDGE_MIN),
+      ),
       coverLimit: int(legacyOutput.coverLimit ?? config.render?.coverLimit, 0),
       coverConcurrency: Math.min(
         MAX_COVER_CONCURRENCY,

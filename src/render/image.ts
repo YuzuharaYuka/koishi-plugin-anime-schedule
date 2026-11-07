@@ -78,7 +78,7 @@ export class Renderer {
     http: HttpClient,
   ) {
     this.scale = Math.max(1, config.render.supersample)
-    this.covers = new CoverStore(ctx, logger, config.render.coverConcurrency, config.render.coverCacheDays, http)
+    this.covers = new CoverStore(ctx, logger, config.render.coverConcurrency, config.render.coverCacheDays, http, config.render.coverMaxEdge)
   }
 
   /** 注册中文字体并清理过期的封面缓存，进程内只执行一次 */

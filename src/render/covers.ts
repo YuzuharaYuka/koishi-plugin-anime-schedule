@@ -18,27 +18,17 @@ import { HttpClient } from '../services/network'
 const DECODE_WAIT_MS = 5000
 
 /**
- * 解码后画布的最大边长，也是磁盘缩略图的最大边长。
- *
- * 版面里封面最大画到约 690 物理像素（季表卡片高 292、超采样 3 倍）；原图是 1414×2000，
- * 按原尺寸留在内存里单张 11MB，一次周表（近百张）就是 1GB。配合 `MAX_RENDER_PIXELS`，
- * 周表/季表实际倍率会被压到约 2.2 倍（约 640 像素），672 既覆盖默认 2 倍下的季表封面，
- * 也给 4 倍超采样的详情海报留出余量，同时把单张解码内存压到约 1.1–1.3MB。
- *
- * 磁盘缓存不再保存接口原图，只保存这个尺寸的 JPEG；冷加载解码的是小图，不再解原图。
+ * 磁盘缩略图的 JPEG 质量；封面不会再被放大到超过配置的边长，q90 足够
  */
-const COVER_MAX_EDGE = 672
-
-/** 磁盘缩略图的 JPEG 质量；封面不会再被放大到超过 672，q90 足够 */
 const COVER_THUMB_QUALITY = 90
 
 /**
  * 磁盘缓存键的版本号。
  *
- * 缓存格式变更后必须改它：v2 及以前存的是接口原图，v3 起只存插件生成的 672px
- * JPEG 缩略图。旧文件由 `prune()` 按 TTL 与数量上限自然清掉。
+ * 缓存格式变更后必须改它：v2 及以前存的是接口原图，v3 起只存插件生成的缩略图，
+ * v4 起缩略图边长由用户配置决定并参与键计算。旧文件由 `prune()` 按 TTL 与数量上限清掉。
  */
-const COVER_CACHE_VERSION = 3
+const COVER_CACHE_VERSION = 4
 
 /**
  * 单张封面的总时间预算（含多候选地址）。
@@ -83,7 +73,7 @@ function toBuffer(raw: unknown): Buffer | null {
  * 把图片字节解码成可绘制的画布。
  * 赋 `Image.src` 后 `width/height` 立刻可用，但位图解码是异步的，直接 `drawImage` 只会得到全透明的空画布。
  */
-async function decodeToCanvas(buffer: Buffer): Promise<Canvas | null> {
+async function decodeToCanvas(buffer: Buffer, maxEdge: number): Promise<Canvas | null> {
   if (!buffer.length) return null
   const image = new Image()
   try {
@@ -96,8 +86,8 @@ async function decodeToCanvas(buffer: Buffer): Promise<Canvas | null> {
   if (!loaded) return null
 
   if (!image.width || !image.height) return null
-  // 一次性缩到 `COVER_MAX_EDGE` 以内：高分辨率原图留在内存里既占地方，绘制时还要再缩放一遍
-  const ratio = Math.min(1, COVER_MAX_EDGE / Math.max(image.width, image.height))
+  // 一次性缩到配置的最大边长以内：高分辨率原图留在内存里既占地方，绘制时还要再缩放一遍
+  const ratio = Math.min(1, maxEdge / Math.max(image.width, image.height))
   const width = Math.max(1, Math.round(image.width * ratio))
   const height = Math.max(1, Math.round(image.height * ratio))
   const canvas = createCanvas(width, height)
@@ -148,6 +138,8 @@ export class CoverStore {
     private cacheDays: number,
     /** 出网客户端（含代理） */
     private http: HttpClient,
+    /** 封面解码与磁盘缩略图的最大边长（像素） */
+    private maxEdge: number,
   ) {
     this.cacheRoot = resolve(ctx.baseDir, ...COVER_CACHE_DIR)
     this.versionPath = resolve(this.cacheRoot, '.version')
@@ -254,7 +246,7 @@ export class CoverStore {
   private async fetchAndDecode(url: string): Promise<Canvas | null> {
     const cachedFile = await this.readDiskCache(url)
     if (cachedFile) {
-      const canvas = await decodeToCanvas(cachedFile)
+      const canvas = await decodeToCanvas(cachedFile, this.maxEdge)
       if (canvas) return canvas
       // 磁盘上的文件损坏时删掉，重新下载
       await fs.rm(this.filePath(url), { force: true }).catch(() => undefined)
@@ -271,7 +263,7 @@ export class CoverStore {
       }
       const buffer = await this.download(candidate, Math.min(COVER_TIMEOUT_MS, remaining))
       if (!buffer) continue
-      const canvas = await decodeToCanvas(buffer)
+      const canvas = await decodeToCanvas(buffer, this.maxEdge)
       if (!canvas) {
         this.logger.debug('[render] 封面解码失败: %s', sanitizeUrl(candidate))
         continue
@@ -335,8 +327,8 @@ export class CoverStore {
   }
 
   private filePath(url: string): string {
-    // 键里带上版本：候选尺寸顺序变过之后，旧文件里存的是低清图，不能继续命中
-    const hash = createHash('sha1').update(`v${COVER_CACHE_VERSION}|${url}`).digest('hex')
+    // 键里带上版本与边长：不同清晰度不共享缓存，切换配置后不会误读旧缩略图
+    const hash = createHash('sha1').update(`v${COVER_CACHE_VERSION}|${this.maxEdge}|${url}`).digest('hex')
     return resolve(this.cacheRoot, hash.slice(0, 2), `${hash}.img`)
   }
 
@@ -365,7 +357,7 @@ export class CoverStore {
     }
   }
 
-  /** 把已缩到 672px 的画布编码成 JPEG 落盘；失败只影响下次冷加载，不影响本次出图 */
+  /** 把已缩到配置边长的画布编码成 JPEG 落盘；失败只影响下次冷加载，不影响本次出图 */
   private async writeThumbnail(url: string, canvas: Canvas): Promise<void> {
     try {
       const thumbnail = await canvas.encode('jpeg', COVER_THUMB_QUALITY)
