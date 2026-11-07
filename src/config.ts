@@ -239,7 +239,7 @@ export const Config: Schema<Config> = Schema.intersect([
         .description('图片字体，可填本机字体')
         .default(DEFAULT_FONT_FAMILY),
       coverMaxEdge: Schema.number()
-        .min(COVER_MAX_EDGE_MIN).max(COVER_MAX_EDGE_MAX).step(32)
+        .min(COVER_MAX_EDGE_MIN).max(COVER_MAX_EDGE_MAX).step(1)
         .description('封面解码边长（像素）')
         .default(COVER_MAX_EDGE_DEFAULT),
       coverLimit: Schema.number()

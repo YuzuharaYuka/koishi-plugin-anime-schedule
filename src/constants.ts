@@ -185,9 +185,9 @@ export const COVER_CONCURRENCY = 8
 export const MAX_COVER_CONCURRENCY = 32
 
 /** 封面解码/磁盘缩略图的最大边长（像素）默认值与可选范围 */
-export const COVER_MAX_EDGE_DEFAULT = 672
+export const COVER_MAX_EDGE_DEFAULT = 650
 export const COVER_MAX_EDGE_MIN = 256
-export const COVER_MAX_EDGE_MAX = 1024
+export const COVER_MAX_EDGE_MAX = 2048
 
 /** 封面下载超时与体积上限，避免个别大图拖垮整次渲染 */
 export const COVER_TIMEOUT_MS = 8000

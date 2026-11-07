@@ -30,10 +30,11 @@ const COVER_THUMB_QUALITY = 100
  * 磁盘缓存键的版本号。
  *
  * 缓存格式变更后必须改它：v2 及以前存的是接口原图，v3 起只存插件生成的缩略图，
- * v4 起缩略图边长由用户配置决定并参与键计算，v5 起缩略图质量提高到 95，v6 起用 q100。
+ * v4 起缩略图边长由用户配置决定并参与键计算，v5 起缩略图质量提高到 95，v6 起用 q100，
+ * v7 起缓存文件改用 `.jpg` 扩展名（内容本来就是 JPEG，不再伪装成光盘映像 `.img`）。
  * 旧文件由 `prune()` 按 TTL 与数量上限清掉。
  */
-const COVER_CACHE_VERSION = 6
+const COVER_CACHE_VERSION = 7
 
 /**
  * 单张封面的总时间预算（含多候选地址）。
@@ -334,7 +335,7 @@ export class CoverStore {
   private filePath(url: string): string {
     // 键里带上版本与边长：不同清晰度不共享缓存，切换配置后不会误读旧缩略图
     const hash = createHash('sha1').update(`v${COVER_CACHE_VERSION}|${this.maxEdge}|${url}`).digest('hex')
-    return resolve(this.cacheRoot, hash.slice(0, 2), `${hash}.img`)
+    return resolve(this.cacheRoot, hash.slice(0, 2), `${hash}.jpg`)
   }
 
   /** 该封面是否命中磁盘缓存（仅用于统计，不参与加载流程） */
@@ -406,7 +407,7 @@ export class CoverStore {
         if (!bucket.isDirectory()) continue
         const dir = resolve(this.cacheRoot, bucket.name)
         for (const file of await fs.readdir(dir)) {
-          if (!file.endsWith('.img')) continue
+          if (!file.endsWith('.jpg')) continue
           const path = resolve(dir, file)
           const stat = await fs.stat(path).catch(() => null)
           if (!stat) continue
