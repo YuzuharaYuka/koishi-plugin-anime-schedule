@@ -1,7 +1,7 @@
 import { createCanvas, type Canvas, type SKRSContext2D } from '@napi-rs/canvas'
 import { HttpClient } from '../services/network'
 import type { Context, Logger } from 'koishi'
-import { IMAGE_LIST_TWO_COLUMN_AT, IMAGE_LAYOUT, IMAGE_MAX_CARDS, MAX_RENDER_PIXELS, getMessages } from '../constants'
+import { IMAGE_LIST_TWO_COLUMN_AT, IMAGE_LAYOUT, IMAGE_MAX_CARDS, getMessages } from '../constants'
 import type { Messages } from '../constants'
 import type { Config } from '../config'
 import type { Digest, DigestGroup, DigestItem, RenderPayload } from '../types'
@@ -154,17 +154,8 @@ export class Renderer {
    * `width` / `height` 仍是逻辑尺寸，各版面照旧用逻辑坐标排版，由 `ctx.scale` 映射到实际像素。
    */
   private createSurface(width: number, height: number): { canvas: Canvas; ctx: SKRSContext2D; scale: number } {
-    // 高倍超采样在长图上会平方级放大像素量；按面积上限收一收，小图仍可保留用户设置
-    const scale = Math.max(1, Math.min(this.scale, Math.sqrt(MAX_RENDER_PIXELS / Math.max(1, width * height))))
-    if (scale < this.scale) {
-      this.logger.debug(
-        '[render] 图片像素量超过上限，超采样 %sx → %sx（逻辑尺寸 %dx%d）',
-        this.scale,
-        scale.toFixed(2),
-        width,
-        height,
-      )
-    }
+    // 不设像素上限：清晰度完全由超采样倍率决定，倍率由用户按机器内存自行权衡
+    const scale = this.scale
     const canvas = createCanvas(Math.round(width * scale), Math.round(height * scale))
     const ctx = canvas.getContext('2d')
     if (scale !== 1) ctx.scale(scale, scale)

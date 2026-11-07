@@ -34,7 +34,7 @@ const readNumber = (name: string, fallback: number): number => {
   return Number.isFinite(parsed) ? parsed : fallback
 }
 
-const supersample = Math.max(1, Math.min(5, Math.round(readNumber('supersample', 2))))
+const supersample = Math.max(1, Math.min(5, Math.round(readNumber('supersample', 2) * 100) / 100))
 const quality = Math.max(1, Math.min(100, Math.round(readNumber('quality', 100))))
 const iters = Math.max(1, Math.round(readNumber('iters', 3)))
 const withCover = !args.includes('--no-cover')

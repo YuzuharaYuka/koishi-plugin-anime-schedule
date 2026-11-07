@@ -259,8 +259,8 @@ export const Config: Schema<Config> = Schema.intersect([
         .description('JPEG 编码质量（1–100）')
         .default(DEFAULT_JPEG_QUALITY),
       supersample: Schema.number()
-        .min(1).max(MAX_SUPERSAMPLE).step(1)
-        .description('超采样倍数（1–5）')
+        .min(1).max(MAX_SUPERSAMPLE).step(0.05)
+        .description('超采样倍数（1–5，可填小数）')
         .default(DEFAULT_SUPERSAMPLE),
     }),
   }).description('图片'),
@@ -375,6 +375,11 @@ export function normalizeConfig(config: Config): Config {
     if (typeof value !== 'number' || !Number.isFinite(value)) return fallback
     return Math.min(max, Math.max(min, Math.round(value)))
   }
+  /** 保留两位小数并夹到 `[min, max]`，用于超采样倍率等连续值 */
+  const decimal = (value: number | undefined, fallback: number, min: number, max: number): number => {
+    if (typeof value !== 'number' || !Number.isFinite(value)) return fallback
+    return Math.min(max, Math.max(min, Math.round(value * 100) / 100))
+  }
   const bool = (value: boolean | undefined, fallback: boolean): boolean => (
     typeof value === 'boolean' ? value : fallback
   )
@@ -450,7 +455,7 @@ export function normalizeConfig(config: Config): Config {
       ),
       coverCacheDays: int(config.render?.coverCacheDays, 21),
       jpegQuality: Math.min(100, int(config.render?.jpegQuality, DEFAULT_JPEG_QUALITY, 1)),
-      supersample: Math.min(MAX_SUPERSAMPLE, int(config.render?.supersample, DEFAULT_SUPERSAMPLE, 1)),
+      supersample: decimal(config.render?.supersample, DEFAULT_SUPERSAMPLE, 1, MAX_SUPERSAMPLE),
     },
     localize: {
       enabled: bool(config.localize?.enabled, true),

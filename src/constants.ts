@@ -259,15 +259,6 @@ export const DEFAULT_SUPERSAMPLE = 2
 export const MAX_SUPERSAMPLE = 5
 
 /**
- * 单张图片的物理像素上限。
- *
- * 周表/季表在 3–5 倍超采样下会达到 50–140MP，单张画布就要几百 MB；这里取 64MP：
- * 3 倍下周表约 50MP、季表约 45MP，可以完整保留用户设置的清晰度；4–5 倍再按面积
- * 降低倍率，避免低内存机器在出图时被 OOM 杀掉。
- */
-export const MAX_RENDER_PIXELS = 64_000_000
-
-/**
  * 每日更新表的日期偏移范围（天）。
  *
  * 配置项的 `.min()/.max()` 与 `normalizeConfig` 的钳制共用这两个值——
