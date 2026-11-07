@@ -77,6 +77,7 @@ export class BangumiDataIndex {
   private sourceLabel = ''
   private loaded = false
   private loadPromise: Promise<void> | null = null
+  private refreshPromise: Promise<boolean> | null = null
   /** 检索用的折叠名缓存，见 `searchables()` */
   private searchable: { entry: IndexEntry; names: string[] }[] | null = null
   private readonly loader: BangumiDataLoader
@@ -150,6 +151,34 @@ export class BangumiDataIndex {
       throw error
     })
     return this.loadPromise
+  }
+
+  /**
+   * 按 TTL 从 CDN 刷新数据。返回是否真的换了一份数据。
+   *
+   * 刷新只替换 `entries` 与索引 Map，不涉及 I/O 中途的异步操作；查询侧要么看到旧快照，
+   * 要么看到新快照，不会看到半份数据。缓存仍新鲜时不会发请求。
+   */
+  async refresh(maxAgeMs: number): Promise<boolean> {
+    if (this.refreshPromise) return this.refreshPromise
+
+    const task = (async () => {
+      await this.ensure()
+      const loaded = await this.loader.refresh(maxAgeMs)
+      if (!loaded) return false
+      this.apply(loaded.items, loaded.source)
+      this.loaded = true
+      this.logger.info('[index] bangumi-data 已刷新 %d 部作品（来源: %s）', this.entries.length, this.sourceLabel)
+      return true
+    })()
+
+    this.refreshPromise = task
+    void task
+      .finally(() => {
+        if (this.refreshPromise === task) this.refreshPromise = null
+      })
+      .catch(() => undefined)
+    return task
   }
 
   /**

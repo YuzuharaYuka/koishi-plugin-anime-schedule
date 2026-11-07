@@ -107,6 +107,7 @@ npm i koishi-plugin-anime-schedule
 | `requestTimeout` | `10` | 默认请求超时（秒） |
 | `retries` | `2` | 失败重试次数 |
 | `debug` | `false` | 调试日志（含用户输入） |
+| `dataRefreshHours` | `24` | 数据刷新间隔（小时，0 关闭） |
 
 完整配置见控制台。
 
@@ -116,6 +117,7 @@ npm i koishi-plugin-anime-schedule
 - 时间轴虚线表示当前时刻，上方已播出，下方未播出。
 - 播出时刻优先取 AniList，缺失时按放送周期推算；播完的作品会从更新表和订阅列表移除。
 - 定时推送与开播提醒都会去重，不会重复发送。
+- bangumi-data 启动后会按 `dataRefreshHours` 从官方 CDN 刷新；刷新失败时继续使用磁盘缓存或 npm 基线。
 - 以上指令均以会话为单位，群聊与私聊都可用；推送开关和订阅只影响当前会话。
 - 调试日志可能包含搜索词与指令参数，排查后请关闭。
 
@@ -126,6 +128,8 @@ npm i koishi-plugin-anime-schedule
 **显示已更新但看不到播放源？** 时刻以日本电视台档期为准，配信平台可能提前或延后。
 
 **当季新番没出现？** 本季表只收 TV / WEB；也可能尚未被 bangumi-data 收录。
+
+**番剧数据多久更新？** 默认每 24 小时从 bangumi-data 官方 CDN 刷新一次，可用 `dataRefreshHours` 调整或关闭。
 
 **老番出现在今日表？** 条目仍在更新，或上游数据尚未完结。
 

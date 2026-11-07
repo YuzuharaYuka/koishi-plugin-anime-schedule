@@ -9,10 +9,12 @@ import {
   DEFAULT_SCORE_TTL_HOURS,
   DAILY_OFFSET_MAX,
   DAILY_OFFSET_MIN,
+  DEFAULT_DATA_REFRESH_HOURS,
   DEFAULT_NIGHT_RANGE,
   DEFAULT_SUPERSAMPLE,
   LOCALIZE_TIMEOUT_SECONDS,
   MAX_COVER_CONCURRENCY,
+  MAX_DATA_REFRESH_HOURS,
   MAX_REQUEST_TIMEOUT_SECONDS,
   MAX_RETRIES,
   MAX_SUPERSAMPLE,
@@ -98,6 +100,8 @@ export interface Config {
     requestTimeout: number
     retries: number
     debug: boolean
+    /** bangumi-data 自动刷新间隔（小时），0 表示关闭 */
+    dataRefreshHours: number
   }
 }
 
@@ -308,6 +312,10 @@ export const Config: Schema<Config> = Schema.intersect([
       debug: Schema.boolean()
         .description('开启后输出调试日志')
         .default(false),
+      dataRefreshHours: Schema.number()
+        .min(0).max(MAX_DATA_REFRESH_HOURS).step(1)
+        .description('数据刷新间隔（小时，0 关闭）')
+        .default(DEFAULT_DATA_REFRESH_HOURS),
     }),
   }).description('高级'),
 ])
@@ -473,6 +481,10 @@ export function normalizeConfig(config: Config): Config {
       ),
       retries: Math.min(MAX_RETRIES, int(config.advanced?.retries, 2)),
       debug: bool(config.advanced?.debug, false),
+      dataRefreshHours: Math.min(
+        MAX_DATA_REFRESH_HOURS,
+        int(config.advanced?.dataRefreshHours, DEFAULT_DATA_REFRESH_HOURS, 0),
+      ),
     },
   }
 }

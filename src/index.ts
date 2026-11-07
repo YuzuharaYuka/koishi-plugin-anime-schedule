@@ -158,6 +158,19 @@ export function apply(ctx: Context, rawConfig: Config) {
     try {
       renderer.init()
       await Promise.all([localizeReady, indexReady, verdictReady])
+
+      const refreshHours = config.advanced.dataRefreshHours
+      if (refreshHours > 0) {
+        const refresh = () => {
+          void index.refresh(refreshHours * 3600_000).catch((error) => {
+            logger.warn('[index] bangumi-data 刷新失败:', error)
+          })
+        }
+        // 启动后先检查一次；之后按配置间隔刷新，不阻塞指令与推送
+        refresh()
+        ctx.setInterval(refresh, refreshHours * 3600_000)
+      }
+
       const anyPushEnabled = config.push.dailyEnabled
         || config.push.nightEnabled
         || config.push.weeklyEnabled

@@ -41,15 +41,21 @@ export const ANILIST_ID_CACHE_VERSION = 1
  * bangumi-data 索引。
  *
  * 数据默认来自 npm 依赖包 `bangumi-data`（`main` 指向 `dist/data.json`），
- * 随插件一起安装、无需联网；下面这些地址只在依赖包缺失时才作为回退。
+ * 随插件一起安装、无需联网；启动后会按刷新间隔从下面这些地址异步拉取最新数据，
+ * 依赖包只作为离线基线与 CDN 全部失败时的兜底。
  * 仓库: https://github.com/bangumi-data/bangumi-data
  */
 export const BANGUMI_DATA_FALLBACK_URLS = [
-  'https://cdn.jsdelivr.net/npm/bangumi-data@latest/dist/data.json',
-  'https://unpkg.com/bangumi-data@latest/dist/data.json',
+  // 官方 README 推荐：unpkg 的 0.3.x 最新数据
+  'https://unpkg.com/bangumi-data@0.3/dist/data.json',
+  'https://cdn.jsdelivr.net/npm/bangumi-data@0.3/dist/data.json',
   'https://raw.githubusercontent.com/bangumi-data/bangumi-data/master/dist/data.json',
 ]
 export const BANGUMI_DATA_FILE = 'bangumi-data.json'
+
+/** 数据自动刷新间隔（小时），0 表示关闭 */
+export const DEFAULT_DATA_REFRESH_HOURS = 24
+export const MAX_DATA_REFRESH_HOURS = 24 * 7
 
 /** bangumi-data 回退缓存的目录（相对于 ctx.baseDir），与本地化缓存放在一起 */
 export const DATA_DIR = ['data', 'anime-schedule']

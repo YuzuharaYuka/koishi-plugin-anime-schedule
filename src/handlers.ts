@@ -694,6 +694,7 @@ export async function commandStatus(deps: HandlerContext, session: Session): Pro
       `本地化: ${digest.localizer.enabled ? `已开启 (${config.localize.titleStyle})` : '已关闭'}`,
       // 用索引层的真实来源而非写死：`bangumi-data` 取不到时会退化为远程拉取，状态页正是用来诊断这种情况的
       `数据来源: ${describeIndexSource(digest.index.source)} (${digest.index.size} 部) / Bangumi`,
+      `数据刷新: ${config.advanced.dataRefreshHours > 0 ? `每 ${config.advanced.dataRefreshHours} 小时` : '关闭'}`,
       `推送时刻: ${describeTimes(config)}`,
       `开关状态: 每日 ${channel?.dailyEnabled ? '开' : '关'} / 深夜档 ${channel?.nightEnabled ? '开' : '关'} / 本周 ${channel?.weeklyEnabled ? '开' : '关'} / 本季 ${channel?.seasonEnabled ? '开' : '关'}`,
       `订阅番剧: ${subscriptions.length} 部${config.range.maxPerChannel > 0 ? ` (上限 ${config.range.maxPerChannel})` : ''}`,
