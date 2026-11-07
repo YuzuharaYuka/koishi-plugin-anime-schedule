@@ -48,6 +48,9 @@ async function main() {
     output: {
       ...base.output,
       showCover: !skipCover,
+    },
+    render: {
+      ...base.render,
       // 预览要看到真实的封面密度，因此不设上限
       coverLimit: 0,
     },

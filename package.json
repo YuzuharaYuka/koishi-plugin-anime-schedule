@@ -1,9 +1,9 @@
 {
   "name": "koishi-plugin-anime-schedule",
-  "description": "番剧时间表与订阅提醒：提供日 / 周 / 季三表，支持定时推送、指定订阅、搜索和详情展示",
+  "description": "番剧更新表与订阅提醒，提供日、周、季三张表，支持定时推送、订阅、搜索与详情。",
   "version": "1.1.5",
   "main": "lib/index.js",
-  "typings": "lib/index.d.ts",
+  "types": "lib/index.d.ts",
   "files": [
     "lib",
     "readme.md"
@@ -42,7 +42,7 @@
   },
   "koishi": {
     "description": {
-      "zh": "番剧时间表与订阅提醒：日 / 周 / 季三表，支持定时推送、指定订阅、搜索和详情展示"
+      "zh": "番剧更新表与订阅提醒，提供日、周、季三张表，支持定时推送、订阅、搜索与详情。"
     },
     "service": {
       "required": [

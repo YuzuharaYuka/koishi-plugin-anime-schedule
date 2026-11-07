@@ -35,7 +35,7 @@ import {
   getSeasonStartMonth,
   today,
 } from '../utils/time'
-import { clamp, debugLog, errorMessage } from '../utils'
+import { clamp, errorMessage } from '../utils'
 
 /** 「本周表」向后覆盖的天数 */
 const FOLLOWING_WINDOW_DAYS = 14
@@ -63,14 +63,14 @@ const TITLE_SEARCH_LIMIT = 8
 const PER_ITEM_LOG_LIMIT = 8
 
 /** 有上限的逐条日志：前 `PER_ITEM_LOG_LIMIT` 条照常输出，其余只计数 */
-function boundedLog(): { log: (message: string, ...args: unknown[]) => void; omitted: () => number } {
+function boundedLog(logger: Logger): { log: (message: string, ...args: unknown[]) => void; omitted: () => number } {
   let used = 0
   let skipped = 0
   return {
     log(message: string, ...args: unknown[]) {
       if (used < PER_ITEM_LOG_LIMIT) {
         used++
-        debugLog(message, ...args)
+        logger.debug(message, ...args)
       } else skipped++
     },
     omitted: () => skipped,
@@ -157,7 +157,7 @@ export class DigestService {
   constructor(
     private ctx: Context,
     private config: Config,
-    logger: Logger,
+    private logger: Logger,
     readonly index: BangumiDataIndex,
     http: HttpClient,
     /** AniList 播出状态查询；未注入时退化为「按 Bangumi 逐集档期判断」 */
@@ -197,7 +197,7 @@ export class DigestService {
       const filter = options.filter
       candidates = candidates.filter((candidate) => filter(candidate))
       if (before !== candidates.length) {
-        debugLog('[digest] 按条件预筛: %d 场 → %d 场', before, candidates.length)
+        this.logger.debug('[digest] 按条件预筛: %d 场 → %d 场', before, candidates.length)
       }
     }
     if (activeOnly) {
@@ -209,7 +209,7 @@ export class DigestService {
       candidates = candidates.filter((candidate) => (
         candidate.entry.endMs === null || candidate.atMs <= candidate.entry.endMs
       ))
-      debugLog('[digest] 按最终回预筛: %d 场 → %d 场', before, candidates.length)
+      this.logger.debug('[digest] 按最终回预筛: %d 场 → %d 场', before, candidates.length)
     }
     return this.finalizeCandidates(candidates, options)
   }
@@ -271,7 +271,7 @@ export class DigestService {
       // 没有场次」去否决它们，会把在播番整季清空。
       if (state.nextEpisode?.episode === 1 && state.nextEpisode.atMs > options.toMs) {
         suppressed.add(key)
-        debugLog(
+        this.logger.debug(
           '[digest] 舍弃 %s 的推算场次：AniList 的首播 %s 在本窗口之后',
           candidate.entry.title,
           new Date(state.nextEpisode.atMs).toISOString().slice(0, 16),
@@ -291,7 +291,7 @@ export class DigestService {
         // 明确断言，可信度比可能属于上一季的历史场次更高。
         schedule = this.extendFromNext(state.nextEpisode, candidate.entry, options)
         if (schedule) {
-          debugLog(
+          this.logger.debug(
             '[digest] %s 的逐话表未覆盖窗口，改用 nextAiringEpisode 外推（ep%d @ %s）',
             candidate.entry.title,
             state.nextEpisode.episode,
@@ -302,7 +302,7 @@ export class DigestService {
       if (!schedule?.length) {
         stale++
         const last = state.schedule[state.schedule.length - 1]
-        debugLog(
+        this.logger.debug(
           '[digest] %s 的 AniList 排期未覆盖 %s ~ %s（逐话表最新 %s），改用推算（已给出时刻的话数除外）',
           candidate.entry.title,
           new Date(options.fromMs).toISOString().slice(0, 10),
@@ -314,7 +314,7 @@ export class DigestService {
       fromAniList.set(key, { entry: candidate.entry, schedule })
     }
     if (stale > 0) {
-      debugLog('[digest] %d 部作品的 AniList 排期未覆盖本窗口，改用周期推算', stale)
+      this.logger.debug('[digest] %d 部作品的 AniList 排期未覆盖本窗口，改用周期推算', stale)
     }
 
     const replaced: AirCandidate[] = []
@@ -332,7 +332,7 @@ export class DigestService {
       if (suppressed.has(candidate.entry.key)) continue
       const knownAt = knownEpisodes.get(candidate.entry.key)?.get(candidate.episode)
       if (knownAt !== undefined && Math.abs(knownAt - candidate.atMs) > 60000) {
-        debugLog(
+        this.logger.debug(
           '[digest] 舍弃 %s 第 %d 话的推算场次：AniList 给出的时刻是 %s',
           candidate.entry.title,
           candidate.episode,
@@ -345,10 +345,10 @@ export class DigestService {
 
     const merged = this.finalizeCandidates([...replaced, ...predicted], options)
     if (fromAniList.size) {
-      debugLog('[digest] 采用 AniList 逐话时刻: %d 部 → %d 场（推算共 %d 场）', fromAniList.size, replaced.length, candidates.length)
+      this.logger.debug('[digest] 采用 AniList 逐话时刻: %d 部 → %d 场（推算共 %d 场）', fromAniList.size, replaced.length, candidates.length)
     }
     if (suppressed.size) {
-      debugLog('[digest] 因 AniList 首播在窗口之后而舍弃推算场次: %d 部', suppressed.size)
+      this.logger.debug('[digest] 因 AniList 首播在窗口之后而舍弃推算场次: %d 部', suppressed.size)
     }
     return merged
   }
@@ -356,10 +356,10 @@ export class DigestService {
   /**
    * 可选闸门：剔除「超长期连载番」。判据只有**展示话数 ≥ 阈值**，因此不依赖网络。
    * **必须在条目构建之后调用**（`applyAiringSchedule` 会按作品去重，话数可能不同）。
-   * 阈值 `content.longRunningThreshold`，**默认 0 表示不过滤**。
+   * 阈值 `range.longRunningThreshold`，**默认 0 表示不过滤**。
    */
   private dropLongRunning(items: DigestItem[]): DigestItem[] {
-    const threshold = this.config.content.longRunningThreshold
+    const threshold = this.config.range.longRunningThreshold
     if (!threshold || threshold <= 0) return items
 
     const kept: DigestItem[] = []
@@ -372,7 +372,7 @@ export class DigestService {
       kept.push(item)
     }
     if (dropped.length) {
-      debugLog(
+      this.logger.debug(
         '[digest] 剔除超长期连载番 %d 部（第 %d 话以上）: %s',
         items.length - kept.length,
         threshold,
@@ -476,7 +476,7 @@ export class DigestService {
       if (oldest !== undefined) this.followingCache.delete(oldest)
     }
     this.followingCache.set(fromMs, keys)
-    debugLog(
+    this.logger.debug(
       '[digest] 近期开播且后续 %d 天内仍有排期的作品: %d 部（窗口起点 %s）',
       FOLLOWING_WINDOW_DAYS,
       keys.size,
@@ -504,7 +504,7 @@ export class DigestService {
       dropped++
       return false
     })
-    if (dropped > 0) debugLog('[digest] 按判定缓存剔除 %d 场', dropped)
+    if (dropped > 0) this.logger.debug('[digest] 按判定缓存剔除 %d 场', dropped)
     return kept
   }
 
@@ -523,7 +523,7 @@ export class DigestService {
       concluded++
       return false
     })
-    if (concluded > 0) debugLog('[digest] 剔除已播完的作品 %d 部（本地依据）', concluded)
+    if (concluded > 0) this.logger.debug('[digest] 剔除已播完的作品 %d 部（本地依据）', concluded)
     return kept
   }
 
@@ -557,7 +557,7 @@ export class DigestService {
         // 下一场只要晚于末集时刻就必定也已播完，不必再请求 AniList
         dropAfterMs: this.aniListDropAfterMs(state, candidate.atMs),
       })
-      debugLog(
+      this.logger.debug(
         '[digest] 剔除 %s：AniList 状态 %s，已播 %s / %s 集，终映 %s',
         candidate.entry.title,
         state?.status ?? '?',
@@ -568,7 +568,7 @@ export class DigestService {
       dropped++
       return false
     })
-    if (dropped > 0) debugLog('[digest] 剔除已播完的作品 %d 部（AniList）', dropped)
+    if (dropped > 0) this.logger.debug('[digest] 剔除已播完的作品 %d 部（AniList）', dropped)
     return kept
   }
 
@@ -636,7 +636,7 @@ export class DigestService {
     // 首播日期相差超过 `ANILIST_ANCHOR_TOLERANCE_DAYS` 天，说明这条记录是别的季度
     const gapDays = Math.abs(base - startMs) / 86400000
     if (gapDays > ANILIST_ANCHOR_TOLERANCE_DAYS) {
-      debugLog(
+      this.logger.debug(
         '[digest] 不采信 %s 的 AniList 状态：该记录首播 %s，与我们算的首播相差 %d 天',
         state.aniListId,
         state.startDate,
@@ -675,9 +675,9 @@ export class DigestService {
       entry.aniListId = id
       resolved.push(id)
     }
-    if (resolved.length) debugLog('[digest] 按标题补上 %d 个 AniList ID', resolved.length)
+    if (resolved.length) this.logger.debug('[digest] 按标题补上 %d 个 AniList ID', resolved.length)
     if (missing.size > pending.length) {
-      debugLog('[digest] 还有 %d 部缺 AniList ID 的条目未处理，留待后续构建', missing.size - pending.length)
+      this.logger.debug('[digest] 还有 %d 部缺 AniList ID 的条目未处理，留待后续构建', missing.size - pending.length)
     }
 
     const ids = new Set<number>()
@@ -692,13 +692,13 @@ export class DigestService {
       }
       ids.add(entry.aniListId)
     }
-    if (cachedSkipped > 0) debugLog('[digest] 按判定缓存跳过 %d 个 AniList 状态请求', cachedSkipped)
+    if (cachedSkipped > 0) this.logger.debug('[digest] 按判定缓存跳过 %d 个 AniList 状态请求', cachedSkipped)
     if (!ids.size) return new Map()
     await this.airing.ensure()
     try {
       return await this.airing.resolve([...ids], this.config.localize.airingTtlHours / 24, now)
     } catch (error) {
-      debugLog('[digest] AniList 状态查询失败，本次按逐集档期判定: %s', errorMessage(error))
+      this.logger.debug('[digest] AniList 状态查询失败，本次按逐集档期判定: %s', errorMessage(error))
       return new Map()
     }
   }
@@ -718,7 +718,7 @@ export class DigestService {
     let skipped = 0
     let cached = 0
     // 这一段的明细一部一行，用有上限的记录器兜住
-    const detail = boundedLog()
+    const detail = boundedLog(this.logger)
     const kept = candidates.filter((candidate) => {
       const id = candidate.entry.bangumiId
       const base = candidate.entry.broadcastMs
@@ -783,10 +783,10 @@ export class DigestService {
       return false
     })
     const omitted = detail.omitted()
-    if (omitted > 0) debugLog('[digest] 另有 %d 条逐集档期明细未展开（同上）', omitted)
-    if (dropped > 0) debugLog('[digest] 剔除已播完的作品 %d 部（Bangumi 逐集档期）', dropped)
-    if (skipped > 0) debugLog('[digest] %d 部由 AniList 判定，逐集档期未参与', skipped)
-    if (cached > 0) debugLog('[digest] %d 部按判定缓存跳过逐集档期判断', cached)
+    if (omitted > 0) this.logger.debug('[digest] 另有 %d 条逐集档期明细未展开（同上）', omitted)
+    if (dropped > 0) this.logger.debug('[digest] 剔除已播完的作品 %d 部（Bangumi 逐集档期）', dropped)
+    if (skipped > 0) this.logger.debug('[digest] %d 部由 AniList 判定，逐集档期未参与', skipped)
+    if (cached > 0) this.logger.debug('[digest] %d 部按判定缓存跳过逐集档期判断', cached)
     return kept
   }
 
@@ -833,7 +833,7 @@ export class DigestService {
     })
     if (wanted.length === candidates.length) return this.subjectsOf(candidates)
     const subjects = await this.subjectsOf(wanted)
-    debugLog(
+    this.logger.debug(
       '[digest] 闸门 3：%d 部幸存者中只有 %d 部需要 Bangumi 逐集档期（其余由 AniList 定论）',
       candidates.length,
       wanted.length,
@@ -1026,7 +1026,7 @@ export class DigestService {
     const window = this.windowMeta(kind, now, options.fromMs)
 
     const predicted = this.airingsIn(options)
-    debugLog('[digest] %s: 推算 %d 场', kind, predicted.length)
+    this.logger.debug('[digest] %s: 推算 %d 场', kind, predicted.length)
 
     // ── 闸门 0 + 1 + 2：都不需要新增请求，先把大部分候选挡掉 ──
     //
@@ -1192,7 +1192,7 @@ export class DigestService {
    * 传入 `subscribed` 时，已订阅的作品会在条目上带「已订阅」标记。
    */
   async buildDaily(
-    offset = this.config.push.dailyOffsetDays,
+    offset = this.config.schedule.dailyOffsetDays,
     subscribed: Set<string> = EMPTY_SETS,
     now = Date.now(),
   ): Promise<Digest> {
@@ -1300,7 +1300,7 @@ export class DigestService {
     rows.sort((a, b) => (a.at - b.at) || a.item.name.localeCompare(b.item.name))
 
     const items = rows.map((row) => row.item)
-    debugLog(
+    this.logger.debug(
       '[digest] 季表 %d 年 %d 月: 该季首播 %d 部，封面 %d 张，评分 %d 个',
       year,
       startMonth,
@@ -1344,7 +1344,7 @@ export class DigestService {
       }
     }, (items) => this.splitOvernight(items, now))
 
-    debugLog('[digest] 订阅表 %s/%s: %d 条订阅 → 今日 %d 部',
+    this.logger.debug('[digest] 订阅表 %s/%s: %d 条订阅 → 今日 %d 部',
       platform, channelId, subscriptions.length,
       digest.groups.reduce((sum, group) => sum + group.items.length, 0))
     return { ...digest, header: this.messages.subHeader(subscriptions.length) }
@@ -1404,7 +1404,7 @@ export class DigestService {
       now,
     })
     const items = await this.buildItems(scheduled, wanted, subjects, airingStates)
-    debugLog('[digest] 订阅排期: %d 条订阅 → 未来 %d 天内 %d 场', tids.length, days, items.length)
+    this.logger.debug('[digest] 订阅排期: %d 条订阅 → 未来 %d 天内 %d 场', tids.length, days, items.length)
     return items.sort((a, b) => a.atMs - b.atMs)
   }
 
@@ -1416,7 +1416,7 @@ export class DigestService {
    */
   async build(kind: DigestKind, platform: string, channelId: string, now = Date.now()): Promise<Digest> {
     const subscribed = await this.subscribedKeys(platform, channelId)
-    if (kind === 'daily') return this.buildDaily(this.config.push.dailyOffsetDays, subscribed, now)
+    if (kind === 'daily') return this.buildDaily(this.config.schedule.dailyOffsetDays, subscribed, now)
     if (kind === 'night') return this.buildNight(subscribed, now)
     if (kind === 'weekly') return this.buildWeekly(subscribed, now)
     if (kind === 'season') return this.buildSeason(0, subscribed, now)
@@ -1441,14 +1441,14 @@ export class DigestService {
     seasonLabel = '',
   ): Digest {
     if (!groups.length) {
-      debugLog('[digest] %s 无内容: %s', kind, emptyText)
+      this.logger.debug('[digest] %s 无内容: %s', kind, emptyText)
       return { kind, header, summary: emptyText, groups: [], seasonLabel, generatedAt: now }
     }
     const limited = this.applyLimit(groups)
     const items = groups.flatMap((group) => group.items)
     const lateNight = items.filter((item) => Number(item.time.slice(0, 2)) < LATE_NIGHT_END_HOUR).length
     const base = `${summaryPrefix}${this.messages.summaryOf(items.length, lateNight)}`
-    debugLog('[digest] %s 构建完成: %d 组 / %d 部（深夜 %d）%s',
+    this.logger.debug('[digest] %s 构建完成: %d 组 / %d 部（深夜 %d）%s',
       kind, limited.groups.length, items.length, lateNight, limited.truncated ? `，${limited.truncated}` : '')
     return {
       kind,
@@ -1465,7 +1465,7 @@ export class DigestService {
    * 否则本周表前几天的列会用光全部额度，后面的日期整列消失。
    */
   private applyLimit(groups: DigestGroup[]): { groups: DigestGroup[]; truncated: string } {
-    const max = this.config.content.maxItems
+    const max = this.config.range.maxItems
     const total = groups.reduce((sum, group) => sum + group.items.length, 0)
     // 0 表示不限制
     if (max <= 0 || total <= max) return { groups, truncated: '' }
@@ -1591,7 +1591,7 @@ export class DigestService {
     try {
       return await this.airing.resolve([...ids], this.config.localize.airingTtlHours / 24, now)
     } catch (error) {
-      debugLog('[digest] 取 AniList 状态失败，改用本地依据: %s', errorMessage(error))
+      this.logger.debug('[digest] 取 AniList 状态失败，改用本地依据: %s', errorMessage(error))
       return new Map()
     }
   }
@@ -1631,7 +1631,7 @@ export class DigestService {
     try {
       rows = await this.ctx.database.get('anime_subscription', { enabled: true })
     } catch (error) {
-      debugLog('[digest] 读取订阅失败，跳过清理: %s', errorMessage(error))
+      this.logger.debug('[digest] 读取订阅失败，跳过清理: %s', errorMessage(error))
       return 0
     }
     if (!rows.length) return 0
@@ -1646,11 +1646,11 @@ export class DigestService {
         { enabled: false },
       )
     } catch (error) {
-      debugLog('[digest] 停用已完结订阅失败: %s', errorMessage(error))
+      this.logger.debug('[digest] 停用已完结订阅失败: %s', errorMessage(error))
       return 0
     }
     const shown = finished.length > 8 ? `${finished.slice(0, 8).join(' ')} …` : finished.join(' ')
-    debugLog('[digest] 已完结的订阅 %d 部已停用: %s', finished.length, shown)
+    this.logger.debug('[digest] 已完结的订阅 %d 部已停用: %s', finished.length, shown)
     return finished.length
   }
 

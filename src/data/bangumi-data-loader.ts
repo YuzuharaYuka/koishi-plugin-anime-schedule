@@ -7,7 +7,7 @@ import { promises as fs } from 'fs'
 import { dirname, resolve } from 'path'
 import type { Context, Logger } from 'koishi'
 import { BANGUMI_DATA_FALLBACK_URLS, BANGUMI_DATA_FILE, DATA_DIR } from '../constants'
-import { errorMessage, unwrapText } from '../utils'
+import { errorMessage, sanitizeUrl, unwrapText } from '../utils'
 import type { BangumiDataItem } from './bangumi-data-source'
 import { HttpClient } from '../services/network'
 
@@ -107,7 +107,7 @@ export class BangumiDataLoader {
         const parsed = JSON.parse(text) as { items?: BangumiDataItem[] }
         if (Array.isArray(parsed.items) && parsed.items.length) return parsed.items
       } catch (error) {
-        this.logger.debug('[index] 镜像 %s 获取失败: %s', url, errorMessage(error))
+        this.logger.debug('[index] 镜像 %s 获取失败: %s', sanitizeUrl(url), errorMessage(error))
         this.http.hintOnFailure(error)
       }
     }

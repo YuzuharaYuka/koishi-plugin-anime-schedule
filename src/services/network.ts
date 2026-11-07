@@ -8,7 +8,7 @@
  */
 import type { Context, Logger } from 'koishi'
 import { buildUserAgent } from '../constants'
-import { debugLog, errorMessage, errorStatus, isTimeoutError, retryDelay } from '../utils'
+import { errorMessage, errorStatus, isTimeoutError, retryDelay, sanitizeUrl } from '../utils'
 
 /** 这个错误是否值得重试：429、5xx 与网络层错误可以，其余 4xx 立即失败 */
 function isRetriable(error: unknown): boolean {
@@ -159,7 +159,7 @@ export class HttpClient {
       } catch (error) {
         if (attempt >= maxAttempt || !isRetriable(error)) throw error
         const delay = retryDelay(attempt)
-        debugLog('[network] %s 失败（%s），%dms 后重试', url, errorMessage(error), delay)
+        this.logger.debug('[network] %s 失败（%s），%dms 后重试', sanitizeUrl(url), errorMessage(error), delay)
         await new Promise<void>((resolve) => { setTimeout(resolve, delay) })
       }
     }

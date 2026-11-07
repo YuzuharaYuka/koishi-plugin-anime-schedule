@@ -11,7 +11,7 @@ import {
 } from '../constants'
 import type { Config } from '../config'
 import type { LocalizeCacheEntry, LocalizeCacheFile } from '../types'
-import { debugLog, errorMessage, errorStatus, mapLimit, unwrapPayload } from '../utils'
+import { errorMessage, errorStatus, mapLimit, unwrapPayload } from '../utils'
 import { HttpClient } from './network'
 
 /** Bangumi `GET /v0/subjects/{id}` 的响应中我们用到的字段 */
@@ -126,7 +126,7 @@ export class Localizer {
             LOCALIZE_CACHE_VERSION,
           )
         }
-        debugLog('[localize] 缓存载入完成，条目数: %d', this.memory.size)
+        this.logger.debug('[localize] 缓存载入完成，条目数: %d', this.memory.size)
       } catch (error) {
         if ((error as { code?: string }).code !== 'ENOENT') {
           this.logger.warn('[localize] 读取本地化缓存失败，将重新构建:', error)
@@ -303,7 +303,7 @@ export class Localizer {
     }
 
     const missing = looked.filter((item) => !item.subject)
-    debugLog(
+    this.logger.debug(
       '[localize] 取详情: 请求 %d 部，成功 %d 部，缓存命中 %d 部，未取到 %d 部（%dms）',
       wanted.length,
       ok,
@@ -313,7 +313,7 @@ export class Localizer {
     )
     // 拼一行而不是逐条一行：一次构建可能缺十几部，逐条刷屏会把有用的行挤掉
     if (missing.length) {
-      debugLog('[localize] 未取到详情的条目: %s', missing.map((item) => item.id).join(' '))
+      this.logger.debug('[localize] 未取到详情的条目: %s', missing.map((item) => item.id).join(' '))
     }
     return result
   }
@@ -364,7 +364,7 @@ export class Localizer {
       })
       this.scheduleFlush()
     })
-    if (ok) debugLog('[localize] 后台补评分: %d 部（%dms）', ok, Date.now() - started)
+    if (ok) this.logger.debug('[localize] 后台补评分: %d 部（%dms）', ok, Date.now() - started)
   }
 
   /** 按条目 ID 取单个条目详情；条目不存在（404）或请求失败时返回 null */
@@ -424,7 +424,7 @@ export class Localizer {
     } catch (error) {
       const status = errorStatus(error)
       if (status === 404) {
-        debugLog('[localize] 条目 %d 在 Bangumi 上不存在（404）', id)
+        this.logger.debug('[localize] 条目 %d 在 Bangumi 上不存在（404）', id)
         return { value: null, notFound: true }
       }
       if (status === 429) this.logger.debug('[localize] 条目 %d 被限流（%s）', id, status)

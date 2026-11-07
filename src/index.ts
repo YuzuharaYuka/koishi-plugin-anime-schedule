@@ -42,9 +42,9 @@ export const inject = { required: ['database', 'http'] }
 export { ConfigSchema as Config }
 
 export const usage = `
-番剧更新表与订阅提醒。作品清单来自 [bangumi-data](https://github.com/bangumi-data/bangumi-data)，中文标题、封面与评分来自 [Bangumi](https://bgm.tv/)，排期与播出状态查询 [AniList](https://anilist.co/)。
+番剧更新表与订阅提醒，提供每日、深夜、本周与本季四种推送。
 
-在群聊里执行一次 \`anime.on\` 后开始接收定时推送。
+### 指令
 
 | 指令 | 别名 | 说明 |
 | :--- | :--- | :--- |
@@ -52,25 +52,25 @@ export const usage = `
 | \`anime.today [-o 偏移]\` | 今日新番 | 今日更新；\`-o -1\` 看昨天 |
 | \`anime.night\` | 深夜新番 | 今晚 21:00 至次日 06:00 |
 | \`anime.week\` | 本周新番 | 今天起七天 |
-| \`anime.season [季度]\` | 本季新番 | 本季动画；\`-o -1\` 看上一季 |
-| \`anime.search <关键词>\` | 番剧搜索 | 中日英文标题均可 |
-| \`anime.info <ID、序号或关键词>\` | 番剧详情 | 简介、状态、话数、评分与逐集进度 |
-| \`anime.sub <ID>\` | 番剧订阅 | 使用 Bangumi 条目 ID |
-| \`anime.remove <ID 或序号>\` | 退订 | 也接受订阅列表中的序号 |
-| \`anime.list\` | 订阅列表 | 本群已订阅作品 |
-| \`anime.clear\` | 清空订阅 | 删除本群全部订阅 |
-| \`anime.next [天数]\` | 追番计划 | 未来 1 至 31 天的排期 |
-| \`anime.on / anime.off [类型]\` | 开启推送 / 关闭推送 | 可只开关某一类推送 |
+| \`anime.season [季度]\` | 本季新番 | 本季或指定季度 |
+| \`anime.search <关键词> [-l 数量]\` | 番剧搜索 | 搜索作品 |
+| \`anime.info <ID 或关键词>\` | 番剧详情 | 简介、状态与评分 |
+| \`anime.sub <ID>\` | 番剧订阅 | 按 Bangumi 条目 ID |
+| \`anime.remove <ID 或序号>\` | 退订 | 取消订阅 |
+| \`anime.list\` | 订阅列表 | 查看本会话订阅 |
+| \`anime.clear\` | 清空订阅 | 清空本会话订阅 |
+| \`anime.next [天数]\` | 追番计划 | 未来 1–31 天排期 |
+| \`anime.on\` / \`anime.off\` | 开启推送 / 关闭推送 | 本群推送开关 |
 | \`anime.status\` | 推送状态 | 查看本群推送设置 |
-| \`anime.push <类型>\` | 立即推送 | 手动发送一次 |
+| \`anime.push <类型>\` | 立即推送 | 手动推送一次 |
 
-推送类型：\`daily\`、\`night\`、\`weekly\`、\`season\`，发送时间在控制台配置。
+### 注意
 
-每日、深夜与本周只显示仍在播出的作品；本季表收录该季首播的全部 TV / WEB 动画。
-
-卡片上的 \`ID:xxx\` 可直接用于订阅；\`anime.info\` 也支持搜索结果序号或关键词。
-
-取不到封面或评分时，可安装并启用 **[proxy-agent](/market/?keyword=proxy-agent)** 配置代理。
+首次使用执行 \`anime.on\` 开启定时推送。
+推送类型为 \`daily\`、\`night\`、\`weekly\`、\`season\`，发送时间在控制台配置。
+季度支持 \`2026-07\`、\`26夏\`，\`-o\` 查看相邻季度。
+每日、深夜与本周只列仍在播出的作品；本季表收录该季首播的 TV / WEB 动画。
+封面与评分不可达时，可安装并启用 **[proxy-agent](/market/?keyword=proxy-agent)** 配置代理。
 `
 
 const logger = new Logger(PLUGIN_NAME)
@@ -112,9 +112,8 @@ export function apply(ctx: Context, rawConfig: Config) {
     dispatchedAt: 'unsigned',
   }, { autoInc: true })
 
-  // 调试日志开关：打开后输出 API 请求、索引命中与条目匹配细节
+  // 调试日志开关：打开后把 logger 级别提到 debug，各服务的 logger.debug 才会输出
   setupDebug(config.advanced.debug, logger)
-  if (config.advanced.debug) logger.info('[lifecycle] 调试日志已开启，logger 级别已提到 debug')
 
   // 出网客户端：Bangumi 接口与图床在国内无法直连，代理在这里统一生效
   const http = new HttpClient(ctx, logger, config.advanced.retries, config.advanced.requestTimeout * 1000)
@@ -195,6 +194,18 @@ export function apply(ctx: Context, rawConfig: Config) {
 }
 
 function registerCommands(ctx: Context, deps: HandlerContext) {
+  // 指令入口统一记一条 D 级日志：只记指令与会话标识，不记原始参数
+  ctx.on('command/before-execute', (argv) => {
+    if (!argv.command?.name.startsWith('anime')) return
+    logger.debug(
+      '[command] %s 开始: platform=%s channel=%s user=%s',
+      argv.command.name,
+      argv.session?.platform,
+      argv.session?.channelId,
+      argv.session?.userId,
+    )
+  })
+
   // 主指令：`anime`，各子指令都带中文别名。
   const cmd = ctx.command('anime', '番剧更新提醒与订阅')
     .alias('番剧', '新番')
@@ -300,7 +311,7 @@ function registerCommands(ctx: Context, deps: HandlerContext) {
       return commandSubRemove(deps, session, target ?? '')
     })
 
-  cmd.subcommand('.clear', '清空本群的全部订阅')
+  cmd.subcommand('.clear', '清空本会话的全部订阅')
     .alias('清空订阅', '订阅清空')
     .example('anime.clear')
     .action(async ({ session }) => {
@@ -308,7 +319,7 @@ function registerCommands(ctx: Context, deps: HandlerContext) {
       return commandSubClear(deps, session)
     })
 
-  cmd.subcommand('.list', '查看本群订阅的番剧')
+  cmd.subcommand('.list', '查看本会话订阅的番剧')
     .alias('订阅列表', '番剧订阅列表', '追番列表')
     .example('anime.list')
     .action(async ({ session }) => {

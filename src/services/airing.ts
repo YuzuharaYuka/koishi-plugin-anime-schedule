@@ -17,7 +17,7 @@ import {
   ANILIST_COOLDOWN_MS,
   ANILIST_MIN_INTERVAL_MS,
 } from '../constants'
-import { debugLog, errorMessage, errorStatus, unwrapPayload } from '../utils'
+import { errorMessage, errorStatus, unwrapPayload } from '../utils'
 import type { MatchCandidate, MatchTarget } from '../data/anilist-match'
 import { matchByTitle, normalizeTitle } from '../data/anilist-match'
 import { HttpClient } from './network'
@@ -145,7 +145,7 @@ export class AiringStatusService {
     if (cached !== undefined) return cached
     if (this.coolingDown) return null
     if (this.titleSearches >= TITLE_SEARCH_BUDGET) {
-      debugLog('[airing] 标题搜索额度已用完（%d 次），%s 本次按推算排期', TITLE_SEARCH_BUDGET, target.title)
+      this.logger.debug('[airing] 标题搜索额度已用完（%d 次），%s 本次按推算排期', TITLE_SEARCH_BUDGET, target.title)
       return null
     }
     this.titleSearches++
@@ -156,7 +156,7 @@ export class AiringStatusService {
     const id = matched?.candidate.id ?? null
     this.idByTitle.set(key, id)
     if (id !== null) {
-      debugLog(
+      this.logger.debug(
         '[airing] 按标题补上 AniList ID: %s → #%d（首播差 %s 天，时刻差 %s 小时）',
         target.title,
         id,
@@ -210,7 +210,7 @@ export class AiringStatusService {
     if (!wanted.length) return result
 
     if (this.coolingDown) {
-      debugLog('[airing] 处于限流冷却中，本次不查询（复用已有缓存 %d 条）', result.size)
+      this.logger.debug('[airing] 处于限流冷却中，本次不查询（复用已有缓存 %d 条）', result.size)
       return result
     }
 
@@ -228,7 +228,7 @@ export class AiringStatusService {
         result.set(entry.aniListId, entry)
       }
     }
-    debugLog(
+    this.logger.debug(
       '[airing] 拉取 AniList 数据: 请求 %d 部，成功 %d 部，缓存命中 %d 部 (%dms)',
       wanted.length,
       ok,

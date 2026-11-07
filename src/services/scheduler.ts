@@ -91,7 +91,7 @@ export class Scheduler {
    * `updatePollMinutes` 控制（默认 10 分钟）。
    */
   private reminderDue(now: number): boolean {
-    const interval = this.config.push.updatePollMinutes * 60 * 1000
+    const interval = this.config.schedule.updatePollMinutes * 60 * 1000
     if (this.lastReminderAt !== 0 && now - this.lastReminderAt < interval) return false
     this.lastReminderAt = now
     return true
@@ -111,15 +111,15 @@ export class Scheduler {
       return now >= resolveClockMs(date, clock, this.config.timeZone)
     }
 
-    if (this.config.push.dailyEnabled && passed(this.config.push.dailyTime)) kinds.push('daily')
-    if (this.config.push.nightEnabled && passed(this.config.push.nightTime)) kinds.push('night')
+    if (this.config.push.dailyEnabled && passed(this.config.schedule.dailyTime)) kinds.push('daily')
+    if (this.config.push.nightEnabled && passed(this.config.schedule.nightTime)) kinds.push('night')
     // 本季表只在季度首日发一次：1 / 4 / 7 / 10 月的 1 日
-    if (this.config.push.seasonEnabled && this.isSeasonStart(date) && passed(this.config.push.seasonTime)) {
+    if (this.config.push.seasonEnabled && this.isSeasonStart(date) && passed(this.config.schedule.seasonTime)) {
       kinds.push('season')
     }
-    if (this.config.push.weeklyEnabled && passed(this.config.push.weeklyTime)) {
+    if (this.config.push.weeklyEnabled && passed(this.config.schedule.weeklyTime)) {
       const weekday = this.localWeekday(date)
-      if (weekday === this.config.push.weeklyWeekday) kinds.push('weekly')
+      if (weekday === this.config.schedule.weeklyWeekday) kinds.push('weekly')
     }
     return kinds
   }
@@ -228,16 +228,17 @@ export class Scheduler {
    */
   async pushUpdateReminders(now = Date.now()): Promise<PushResult> {
     const result: PushResult = { kind: 'sub', targets: 0, sent: 0, skipped: 0, failed: 0 }
-    const lookaheadMs = this.config.push.updateLookaheadMinutes * 60 * 1000
+    const lookaheadMs = this.config.schedule.updateLookaheadMinutes * 60 * 1000
     const windowEnd = now + lookaheadMs
 
     const subscriptions = await this.ctx.database.get('anime_subscription', { enabled: true })
     if (!subscriptions.length) return result
 
-    // 取 2 天是为了覆盖「次日凌晨」的场次，随后再按提前量收敛
+    // 取数窗口按提前量放大：窗口从本地零点起算，固定取 2 天会在提前量更大时漏掉场次
+    const days = Math.max(2, Math.ceil(this.config.schedule.updateLookaheadMinutes / 1440) + 1)
     const airings = (await this.digest.upcomingAirings(
       [...new Set(subscriptions.map((item) => item.tid))],
-      2,
+      days,
     )).filter((item) => item.atMs > now && item.atMs <= windowEnd)
     if (!airings.length) return result
 

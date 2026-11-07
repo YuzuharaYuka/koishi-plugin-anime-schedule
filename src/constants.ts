@@ -1,3 +1,4 @@
+import { h } from 'koishi'
 import type { DigestKind, PluginLocale } from './types'
 
 /** 插件名，同时作为日志前缀与 User-Agent 主体 */
@@ -168,8 +169,17 @@ export const LOCALIZE_CONCURRENCY = 6
  */
 export const LOCALIZE_TIMEOUT_SECONDS = 10
 
+/** 单次请求超时的可选上限（秒），与配置项的 `.max()` 保持一致 */
+export const MAX_REQUEST_TIMEOUT_SECONDS = 300
+
+/** 请求失败重试次数的可选上限，与配置项的 `.max()` 保持一致 */
+export const MAX_RETRIES = 5
+
 /** 并发拉取封面时的并发上限 */
 export const COVER_CONCURRENCY = 8
+
+/** 封面下载并发的可选上限，与配置项的 `.max()` 保持一致 */
+export const MAX_COVER_CONCURRENCY = 32
 
 /** 封面下载超时与体积上限，避免个别大图拖垮整次渲染 */
 export const COVER_TIMEOUT_MS = 8000
@@ -245,6 +255,9 @@ export const MAX_SUPERSAMPLE = 5
  */
 export const DAILY_OFFSET_MIN = -7
 export const DAILY_OFFSET_MAX = 7
+
+/** 开播提醒提前量的可选上限（分钟），7 天；取数窗口会按该值动态放大 */
+export const MAX_UPDATE_LOOKAHEAD_MINUTES = 7 * 24 * 60
 
 /**
  * 构建结果的复用窗口（毫秒）。
@@ -619,17 +632,17 @@ export function getMessages(locale: PluginLocale): Messages {
 /** 交互回复：完整句，结尾带句号 */
 export const RESPONSES = {
   needGuild: '请在群聊中使用此指令。',
-  invalidKind: (value: string) => `无效的推送类型: ${value}，可选值为 daily、night、weekly、season。`,
-  invalidDigest: (value: string) => `无效的推送类型: ${value}，可选值为 daily、night、weekly、season。`,
-  invalidTid: (value: string) => `无效的作品 ID: ${value}，请使用 Bangumi 条目 ID（如 \`253104\`）或搜索结果中的序号。`,
-  invalidIndex: (value: string) => `无效的序号: ${value}，请使用订阅列表中的序号或作品 ID。`,
-  noSubscription: '本群还没有订阅任何番剧，先使用 `anime.search <关键词>` 找到作品，再用 `anime.sub <ID>` 订阅。',
-  subscribeLimit: (limit: number) => `本群订阅数量已达上限 (${limit} 部)，请先取消部分订阅。`,
-  alreadySubscribed: (title: string) => `已经订阅过 ${title} 了。`,
+  invalidKind: (value: string) => h.text(`无效的推送类型: ${value}，可选值为 daily、night、weekly、season。`),
+  invalidDigest: (value: string) => h.text(`无效的推送类型: ${value}，可选值为 daily、night、weekly、season。`),
+  invalidTid: (value: string) => h.text(`无效的作品 ID: ${value}，请使用 Bangumi 条目 ID（如 \`253104\`）或搜索结果中的序号。`),
+  invalidIndex: (value: string) => h.text(`无效的序号: ${value}，请使用订阅列表中的序号或作品 ID。`),
+  noSubscription: '本会话还没有订阅任何番剧，先使用 `anime.search <关键词>` 找到作品，再用 `anime.sub <ID>` 订阅。',
+  subscribeLimit: (limit: number) => `本会话订阅数量已达上限 (${limit} 部)，请先取消部分订阅。`,
+  alreadySubscribed: (title: string) => h.text(`已经订阅过 ${title} 了。`),
   subscribeFailed: '订阅失败，请稍后重试或检查后台日志。',
   databaseFailed: '数据库操作失败，请检查后台日志。',
   renderFailed: '图片渲染失败，已改用文本发送。',
-  emptySearch: (keyword: string) => `未找到与 "${keyword}" 相关的作品，请尝试使用日文原名或更简短的关键词。`,
+  emptySearch: (keyword: string) => h.text(`未找到与 "${keyword}" 相关的作品，请尝试使用日文原名或更简短的关键词。`),
   notFound: '未找到该作品，可能不在 bangumi-data 索引中。',
 } as const
 

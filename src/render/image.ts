@@ -202,7 +202,7 @@ export class Renderer {
   }
 
   /** 批量加载本次绘制用到的封面；`limit` 为 0 时表示不限制 */
-  private async loadCovers(items: DigestItem[], limit = this.config.output.coverLimit): Promise<Map<string, Canvas | null>> {
+  private async loadCovers(items: DigestItem[], limit = this.config.render.coverLimit): Promise<Map<string, Canvas | null>> {
     if (!this.config.output.showCover) return new Map()
     return this.covers.load(items, limit)
   }
@@ -1040,7 +1040,7 @@ export class Renderer {
    */
   private coverDrawOrder(groups: DigestGroup[]): DigestItem[] | null {
     if (!this.config.output.showCover) return []
-    const limit = this.config.output.coverLimit
+    const limit = this.config.render.coverLimit
     const all = groups.flatMap((group) => group.items).filter((item) => !!item.coverUrl)
     if (limit <= 0) return null
     if (groups.length <= 1) return all

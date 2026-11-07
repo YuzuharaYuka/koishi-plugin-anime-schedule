@@ -130,7 +130,7 @@ function subscribedOf(deps: HandlerContext, session: Session): Promise<Set<strin
 
 /** 手动查看当日更新表，`offset` 为相对今天的日期偏移 */
 export async function commandToday(deps: HandlerContext, session: Session, offset = 0): Promise<void> {
-  await withProgress(deps, session, async () => {
+  await withProgress(deps, session, 'anime.today', async () => {
     const subscribed = await subscribedOf(deps, session)
     await replyDigest(deps, session, await deps.digest.buildDaily(offset, subscribed))
   })
@@ -138,7 +138,7 @@ export async function commandToday(deps: HandlerContext, session: Session, offse
 
 /** 手动查看今晚深夜档 */
 export async function commandNight(deps: HandlerContext, session: Session): Promise<void> {
-  await withProgress(deps, session, async () => {
+  await withProgress(deps, session, 'anime.night', async () => {
     const subscribed = await subscribedOf(deps, session)
     await replyDigest(deps, session, await deps.digest.buildNight(subscribed))
   })
@@ -146,7 +146,7 @@ export async function commandNight(deps: HandlerContext, session: Session): Prom
 
 /** 手动查看本周更新表 */
 export async function commandWeekly(deps: HandlerContext, session: Session): Promise<void> {
-  await withProgress(deps, session, async () => {
+  await withProgress(deps, session, 'anime.week', async () => {
     const subscribed = await subscribedOf(deps, session)
     await replyDigest(deps, session, await deps.digest.buildWeekly(subscribed))
   })
@@ -161,19 +161,23 @@ export async function commandSeason(
   session: Session,
   target?: string,
   offsetOption?: number,
-): Promise<string | void> {
+): Promise<string | h | void> {
   const { digest } = deps
   // 相对偏移必须用 `-o` 传：`anime.season -1` 里的 `-1` 会被 CLI 当成选项，位置参数收不到
   const parsed = parseSeasonTarget(target, digest.timeZone)
-  if (parsed.error) return parsed.error
+  if (parsed.error) {
+    deps.logger.debug('[command] anime.season 参数无法识别')
+    return parsed.error
+  }
   // `-o` 走 Koishi 的 number 域，`1.5` 也能进来；季度偏移必须是整数，否则会算出「2.5 月新番」
   const offset = offsetOption === undefined ? parsed.offset : Math.trunc(offsetOption)
   if (offset !== undefined && (offset > SEASON_FUTURE_LIMIT || offset < -40)) {
+    deps.logger.debug('[command] anime.season 偏移越界: %d', offset)
     return offset > 0
       ? `最多往后查 ${SEASON_FUTURE_LIMIT} 季——更远的季度还没公布。`
       : '可查询的季度范围最多往前 40 季（约 10 年）。'
   }
-  await withProgress(deps, session, async () => {
+  await withProgress(deps, session, 'anime.season', async () => {
     const subscribed = await subscribedOf(deps, session)
     await replyDigest(deps, session, await digest.buildSeason(offset ?? 0, subscribed))
   })
@@ -185,7 +189,7 @@ const SEASON_FUTURE_LIMIT = 2
 /** 季度参数的解析结果 */
 interface SeasonTarget {
   offset?: number
-  error?: string
+  error?: string | h
 }
 
 const SEASON_WORDS: Record<string, number> = { 冬: 1, 春: 4, 夏: 7, 秋: 10 }
@@ -205,7 +209,7 @@ function parseSeasonTarget(raw: string | undefined, timeZone: string): SeasonTar
   const named = /^(\d{2,4})\s*([冬春夏秋])$/.exec(text)
   if (named) {
     const year = normalizeYear(Number(named[1]))
-    if (year === null) return { error: `无法识别年份: ${named[1]}` }
+    if (year === null) return { error: h.text(`无法识别年份: ${named[1]}`) }
     return { offset: seasonOffsetOf(year, SEASON_WORDS[named[2]], timeZone) }
   }
 
@@ -219,7 +223,7 @@ function parseSeasonTarget(raw: string | undefined, timeZone: string): SeasonTar
     return { offset: seasonOffsetOf(year, getSeasonStartMonth(month), timeZone) }
   }
 
-  return { error: `无法识别的季度: ${text}，可用 \`2025-04\`、\`25春\` 或偏移量（如 \`-1\`）。` }
+  return { error: h.text(`无法识别的季度: ${text}，可用 \`2025-04\`、\`25春\` 或偏移量（如 \`-1\`）。`) }
 }
 
 /** `25` → `2025`（两位年份按 2000 年后解释） */
@@ -241,10 +245,10 @@ function seasonOffsetOf(year: number, startMonth: number, timeZone: string): num
 }
 
 /** 手动触发一次与定时推送完全一致的内容 */
-export async function commandPush(deps: HandlerContext, session: Session, kindText: string): Promise<string | void> {
+export async function commandPush(deps: HandlerContext, session: Session, kindText: string): Promise<string | h | void> {
   const kind = KIND_ALIASES[(kindText ?? '').trim().toLowerCase()]
   if (!kind) return RESPONSES.invalidDigest(kindText ?? '')
-  await withProgress(deps, session, async () => {
+  await withProgress(deps, session, 'anime.push', async () => {
     await replyDigest(deps, session, await deps.digest.build(kind, platformOf(session), channelOf(session)))
   })
 }
@@ -255,23 +259,27 @@ export async function commandSearch(
   session: Session,
   keyword: string,
   options: { limit?: number } = {},
-): Promise<string | void> {
+): Promise<string | h | void> {
   const { digest } = deps
   const query = (keyword ?? '').trim()
   if (!query) return '请输入要搜索的关键词。'
   const limit = clamp(options.limit ?? 10, 1, 50)
 
-  await session.send(h('quote', { id: session.messageId }) + `正在搜索 "${query}"...`)
+  await session.send(h('quote', { id: session.messageId }) + h.escape(`正在搜索 "${query}"...`))
 
   try {
     // 索引层是本地数据，检索不产生任何网络请求
     const items = await digest.search(query, limit)
-    if (!items.length) return RESPONSES.emptySearch(query)
+    if (!items.length) {
+      deps.logger.debug('[command] anime.search 无结果')
+      return RESPONSES.emptySearch(query)
+    }
     writeSearchCache(session, items)
+    deps.logger.debug('[command] anime.search 完成: %d 条', items.length)
 
     // 仅输出文本列表（含评分与档期）：十余条结果逐条出详情卡会刷屏且难以分辨，
     // 查看详情用 `anime.info <序号>` 或直接点 ID
-    return renderSearchText(items, query, deps.config)
+    return h.text(renderSearchText(items, query, deps.config))
   } catch (error) {
     deps.logger.warn('[command] 搜索失败:', error)
     return `搜索失败。${formatNetworkError(error)}`
@@ -296,6 +304,7 @@ export async function commandInfo(
   // ── 唯一一部：条目 ID / 搜索结果序号 ──
   const id = resolveInfoId(deps, session, raw)
   if (id !== null) return sendInfoDetail(deps, session, id)
+  deps.logger.debug('[command] anime.info 按关键词查询')
 
   // ── 关键词：命中几部就出几张卡，0 表示不限制 ──
   const keyword = raw.replace(/^bgm:/i, '')
@@ -307,6 +316,7 @@ export async function commandInfo(
     return `查询失败。${formatNetworkError(error)}`
   }
   if (!found.length) return RESPONSES.emptySearch(keyword)
+  deps.logger.debug('[command] anime.info 关键词命中: %d 部', found.length)
 
   const picks = found
     .map((item) => ({ bgmId: item.bgmId, aniListId: item.aniListId }))
@@ -336,7 +346,7 @@ export async function commandInfo(
     if (!canForward) {
       // 不能平铺多张卡，只发首张并提示其余数量
       await session.send(details[0])
-      return `另有 ${details.length - 1} 部，用 \`anime.search ${keyword}\` 查看全部，或 \`anime.info <ID>\` 单独查看。`
+      return h.text(`另有 ${details.length - 1} 部，用 \`anime.search ${keyword}\` 查看全部，或 \`anime.info <ID>\` 单独查看。`)
     }
     return h('figure', [...details])
   } catch (error) {
@@ -367,7 +377,8 @@ async function sendInfoDetail(deps: HandlerContext, session: Session, bgmId: num
     const subscribed = await isSubscribed(deps, session, `bgm:${bgmId}`)
     const detail = await deps.info.fetch(bgmId, subscribed)
     if (!detail) return RESPONSES.notFound
-    return (await renderInfoNode(deps, detail)) ?? renderInfoText(detail, deps.config)
+    deps.logger.debug('[command] anime.info ID 命中: %d', bgmId)
+    return (await renderInfoNode(deps, detail)) ?? h.text(renderInfoText(detail, deps.config))
   } catch (error) {
     deps.logger.warn('[command] 查询作品详情失败:', error)
     return `查询失败。${formatNetworkError(error)}`
@@ -404,14 +415,15 @@ async function isSubscribed(deps: HandlerContext, session: Session, tid: string)
 // #region 订阅管理
 
 /**
- * 查看本群订阅列表。每条的「状态」按优先级取：今日有播出 → 时刻与集数；
+ * 查看本会话订阅列表。每条的「状态」按优先级取：今日有播出 → 时刻与集数；
  * 否则下一次播出的日期；已播完 → 明确写出（调度器会自动移除）；都取不到 → 暂无排期。
  */
-export async function commandSubList(deps: HandlerContext, session: Session): Promise<string | void> {
+export async function commandSubList(deps: HandlerContext, session: Session): Promise<string | h | void> {
   const { config, digest } = deps
   try {
     const rows = await digest.listSubscriptions(platformOf(session), channelOf(session))
     if (!rows.length) return RESPONSES.noSubscription
+    deps.logger.debug('[command] anime.list: %d 部订阅', rows.length)
 
     const messages = getMessages(config.locale)
     const date = today(digest.timeZone)
@@ -446,7 +458,7 @@ export async function commandSubList(deps: HandlerContext, session: Session): Pr
       }
       return `${index + 1}. [ID:${id}] ${truncate(name, 50)}\n    ${status}`
     })
-    return [`本群订阅的番剧 (${rows.length} 部):`, ...lines].join('\n')
+    return h.text([`本会话订阅的番剧 (${rows.length} 部):`, ...lines].join('\n'))
   } catch (error) {
     deps.logger.warn('[command] 读取订阅列表失败:', error)
     return RESPONSES.databaseFailed
@@ -457,7 +469,7 @@ export async function commandSubList(deps: HandlerContext, session: Session): Pr
  * 订阅一部作品：参数可以是 Bangumi 条目 ID（`253104`，即季表卡片上的 `ID:253104`），
  * 也可以是 `anime.search` 结果里的序号。
  */
-export async function commandSubAdd(deps: HandlerContext, session: Session, target: string): Promise<string | void> {
+export async function commandSubAdd(deps: HandlerContext, session: Session, target: string): Promise<string | h | void> {
   const { config, digest } = deps
   const raw = (target ?? '').trim()
   if (!raw) return '请提供要订阅的作品 ID 或搜索结果中的序号。'
@@ -476,14 +488,21 @@ export async function commandSubAdd(deps: HandlerContext, session: Session, targ
     if (!titleText) return RESPONSES.notFound
 
     const subscriptions = await digest.listSubscriptions(platformOf(session), channelOf(session))
-    if (subscriptions.some((row) => row.tid === tid)) return RESPONSES.alreadySubscribed(titleText)
+    if (subscriptions.some((row) => row.tid === tid)) {
+      deps.logger.debug('[command] anime.sub 重复订阅')
+      return RESPONSES.alreadySubscribed(titleText)
+    }
 
-    const limit = config.subscription.maxPerChannel
+    const limit = config.range.maxPerChannel
     // 上限为 0 表示不限制订阅数量
-    if (limit > 0 && subscriptions.length >= limit) return RESPONSES.subscribeLimit(limit)
+    if (limit > 0 && subscriptions.length >= limit) {
+      deps.logger.debug('[command] anime.sub 达到上限: %d', limit)
+      return RESPONSES.subscribeLimit(limit)
+    }
 
     await digest.addSubscription(platformOf(session), channelOf(session), tid, titleText)
-    return `已订阅 ${titleText}，开播前会推送提醒。\n使用 \`anime.list\` 查看全部订阅。`
+    deps.logger.debug('[command] anime.sub 完成: %s', tid)
+    return h.text(`已订阅 ${titleText}，开播前会推送提醒。\n使用 \`anime.list\` 查看全部订阅。`)
   } catch (error) {
     deps.logger.warn('[command] 订阅失败:', error)
     return RESPONSES.subscribeFailed
@@ -496,7 +515,7 @@ export async function commandSubAdd(deps: HandlerContext, session: Session, targ
  * 纯数字**先按序号、再按条目 ID** 解释：序号在范围内就取该行，否则当作条目 ID。
  * 与 `anime.info` / `anime.sub` 同一套规则。
  */
-export async function commandSubRemove(deps: HandlerContext, session: Session, target: string): Promise<string | void> {
+export async function commandSubRemove(deps: HandlerContext, session: Session, target: string): Promise<string | h | void> {
   const { digest } = deps
   const raw = (target ?? '').trim()
   if (!raw) return '请提供要取消订阅的作品 ID 或订阅列表中的序号。'
@@ -516,20 +535,22 @@ export async function commandSubRemove(deps: HandlerContext, session: Session, t
     if (!picked) return RESPONSES.invalidIndex(raw)
 
     await digest.removeSubscriptions(platformOf(session), channelOf(session), [picked.tid])
-    return `已取消订阅 ${picked.title || picked.tid}。`
+    deps.logger.debug('[command] anime.remove 完成: %s', picked.tid)
+    return h.text(`已取消订阅 ${picked.title || picked.tid}。`)
   } catch (error) {
     deps.logger.warn('[command] 取消订阅失败:', error)
     return RESPONSES.databaseFailed
   }
 }
 
-/** 清空本群的全部订阅 */
+/** 清空本会话的全部订阅 */
 export async function commandSubClear(deps: HandlerContext, session: Session): Promise<string | void> {
   const { digest } = deps
   try {
     const count = await digest.clearSubscriptions(platformOf(session), channelOf(session))
     if (!count) return RESPONSES.noSubscription
-    return `已清空本群的 ${count} 部订阅。`
+    deps.logger.debug('[command] anime.clear: %d 部', count)
+    return `已清空本会话的 ${count} 部订阅。`
   } catch (error) {
     deps.logger.warn('[command] 清空订阅失败:', error)
     return RESPONSES.databaseFailed
@@ -537,7 +558,7 @@ export async function commandSubClear(deps: HandlerContext, session: Session): P
 }
 
 /** 查询订阅作品未来若干天的播出计划 */
-export async function commandNext(deps: HandlerContext, session: Session, daysText?: string): Promise<string | void> {
+export async function commandNext(deps: HandlerContext, session: Session, daysText?: string): Promise<string | h | void> {
   const { config, digest } = deps
   const parsed = Number.parseInt(daysText ?? '7', 10)
   const days = clamp(Number.isFinite(parsed) ? parsed : 7, 1, 31)
@@ -547,6 +568,7 @@ export async function commandNext(deps: HandlerContext, session: Session, daysTe
 
     const airings = await digest.upcomingAirings(rows.map((row) => row.tid), days)
     if (!airings.length) return `未来 ${days} 天内订阅的作品没有播出计划。`
+    deps.logger.debug('[command] anime.next: %d 天 / %d 场', days, airings.length)
 
     const messages = getMessages(config.locale)
     const lines: string[] = []
@@ -562,7 +584,7 @@ export async function commandNext(deps: HandlerContext, session: Session, daysTe
       lines.push(`${episode ? `${item.time} ${episode}` : item.time}\n  ${truncate(item.name, 60)}`)
     }
 
-    return [`未来 ${days} 天内订阅作品的播出计划:`, ...lines].join('\n')
+    return h.text([`未来 ${days} 天内订阅作品的播出计划:`, ...lines].join('\n'))
   } catch (error) {
     deps.logger.warn('[command] 查询订阅计划失败:', error)
     return `查询失败。${formatNetworkError(error)}`
@@ -573,11 +595,11 @@ export async function commandNext(deps: HandlerContext, session: Session, daysTe
 
 // #region 推送开关
 
-export function commandOn(deps: HandlerContext, session: Session, kindText?: string): Promise<string | void> {
+export function commandOn(deps: HandlerContext, session: Session, kindText?: string): Promise<string | h | void> {
   return togglePush(deps, session, kindText, true)
 }
 
-export function commandOff(deps: HandlerContext, session: Session, kindText?: string): Promise<string | void> {
+export function commandOff(deps: HandlerContext, session: Session, kindText?: string): Promise<string | h | void> {
   return togglePush(deps, session, kindText, false)
 }
 
@@ -586,7 +608,7 @@ async function togglePush(
   session: Session,
   kindText: string | undefined,
   enabled: boolean,
-): Promise<string | void> {
+): Promise<string | h | void> {
   const { ctx, config, digest } = deps
   if (!session.guildId) return RESPONSES.needGuild
 
@@ -628,6 +650,7 @@ async function togglePush(
     )
 
     const scope = kind ? DIGEST_LABELS[kind] : '全部定时推送'
+    deps.logger.debug('[command] anime.on/off: %s %s', scope, enabled ? '开' : '关')
     return enabled
       ? `已开启本群的${scope}。\n推送时刻: ${describeTimes(config)} (${config.timeZone})`
       : `已关闭本群的${scope}。`
@@ -655,6 +678,7 @@ export async function commandStatus(deps: HandlerContext, session: Session): Pro
     const formatText = config.output.format === 'image'
       ? `图片 (${config.output.layout === 'list' ? '卡片列表' : '时间表'})`
       : `纯文本${config.output.useForward ? ' (合并转发)' : ''}`
+    deps.logger.debug('[command] anime.status: %d 部订阅 / %d 条推送记录', subscriptions.length, dispatches.length)
 
     return [
       `时区: ${config.timeZone} (当前 ${formatDate(Date.now(), config.timeZone)})`,
@@ -664,8 +688,8 @@ export async function commandStatus(deps: HandlerContext, session: Session): Pro
       `数据来源: ${describeIndexSource(digest.index.source)} (${digest.index.size} 部) / Bangumi`,
       `推送时刻: ${describeTimes(config)}`,
       `开关状态: 每日 ${channel?.dailyEnabled ? '开' : '关'} / 深夜档 ${channel?.nightEnabled ? '开' : '关'} / 本周 ${channel?.weeklyEnabled ? '开' : '关'} / 本季 ${channel?.seasonEnabled ? '开' : '关'}`,
-      `订阅番剧: ${subscriptions.length} 部${config.subscription.maxPerChannel > 0 ? ` (上限 ${config.subscription.maxPerChannel})` : ''}`,
-      `开播提醒: ${config.push.updateReminderEnabled ? `开，提前 ${config.push.updateLookaheadMinutes} 分钟` : '关'}`,
+      `订阅番剧: ${subscriptions.length} 部${config.range.maxPerChannel > 0 ? ` (上限 ${config.range.maxPerChannel})` : ''}`,
+      `开播提醒: ${config.push.updateReminderEnabled ? `开，提前 ${config.schedule.updateLookaheadMinutes} 分钟` : '关'}`,
       // 按记录时间统计：`sub`（开播提醒）的去重键里带的是时刻而不是日期，不能靠键判断
       `今日推送记录: ${dispatches.length} 条`,
     ].join('\n')
@@ -676,24 +700,31 @@ export async function commandStatus(deps: HandlerContext, session: Session): Pro
 }
 
 function describeTimes(config: Config): string {
-  const weekday = WEEKDAY_NAMES[config.push.weeklyWeekday] ?? '周一'
+  const weekday = WEEKDAY_NAMES[config.schedule.weeklyWeekday] ?? '周一'
   const parts: string[] = []
-  if (config.push.dailyEnabled) parts.push(`每日 ${config.push.dailyTime}`)
-  if (config.push.nightEnabled) parts.push(`深夜档 ${config.push.nightTime}`)
-  if (config.push.weeklyEnabled) parts.push(`${weekday} ${config.push.weeklyTime}`)
-  if (config.push.seasonEnabled) parts.push(`季度首日 ${config.push.seasonTime}`)
+  if (config.push.dailyEnabled) parts.push(`每日 ${config.schedule.dailyTime}`)
+  if (config.push.nightEnabled) parts.push(`深夜档 ${config.schedule.nightTime}`)
+  if (config.push.weeklyEnabled) parts.push(`${weekday} ${config.schedule.weeklyTime}`)
+  if (config.push.seasonEnabled) parts.push(`季度首日 ${config.schedule.seasonTime}`)
   return parts.join(' / ') || '未启用'
 }
 
 // #endregion
 
 /** 耗时操作先回执，再给结果 */
-async function withProgress(deps: HandlerContext, session: Session, task: () => Promise<void>): Promise<void> {
+async function withProgress(
+  deps: HandlerContext,
+  session: Session,
+  name: string,
+  task: () => Promise<void>,
+): Promise<void> {
   await session.send(h('quote', { id: session.messageId }) + '正在获取番组数据...')
+  const started = Date.now()
   try {
     await task()
+    deps.logger.debug('[command] %s 完成 (%dms)', name, Date.now() - started)
   } catch (error) {
-    deps.logger.warn('[command] 获取番组数据失败:', error)
+    deps.logger.warn('[command] %s 失败 (%dms)', name, Date.now() - started, error)
     await session.send(`获取番组数据失败。${formatNetworkError(error)}`)
   }
 }

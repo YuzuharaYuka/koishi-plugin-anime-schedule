@@ -11,7 +11,7 @@ import {
   COVER_TIMEOUT_MS,
 } from '../constants'
 import type { CoverRequest } from '../types'
-import { errorMessage, mapLimit } from '../utils'
+import { errorMessage, mapLimit, sanitizeUrl } from '../utils'
 import { HttpClient } from '../services/network'
 
 /** 等待一张封面解码完成的最长时间 */
@@ -257,22 +257,22 @@ export class CoverStore {
     for (const candidate of coverUrlCandidates(url)) {
       const remaining = deadline - Date.now()
       if (remaining <= 0) {
-        this.logger.debug('[render] 封面超出时间预算，使用占位块: %s', url)
+        this.logger.debug('[render] 封面超出时间预算，使用占位块: %s', sanitizeUrl(url))
         break
       }
       const buffer = await this.download(candidate, Math.min(COVER_TIMEOUT_MS, remaining))
       if (!buffer) continue
       const canvas = await decodeToCanvas(buffer)
       if (!canvas) {
-        this.logger.debug('[render] 封面解码失败: %s', candidate)
+        this.logger.debug('[render] 封面解码失败: %s', sanitizeUrl(candidate))
         continue
       }
       // 一律按原始地址落盘，下次直接用缓存，不再重试备用地址
       void this.writeDiskCache(url, buffer)
-      if (candidate !== url) this.logger.debug('[render] 封面改用备用地址成功: %s', candidate)
+      if (candidate !== url) this.logger.debug('[render] 封面改用备用地址成功: %s', sanitizeUrl(candidate))
       return canvas
     }
-    this.logger.debug('[render] 封面全部候选地址都失败: %s', url)
+    this.logger.debug('[render] 封面全部候选地址都失败: %s', sanitizeUrl(url))
     return null
   }
 
@@ -285,16 +285,16 @@ export class CoverStore {
         retries: 0,
       }))
       if (!buffer) {
-        this.logger.debug('[render] 封面响应不是二进制数据，使用占位块: %s', url)
+        this.logger.debug('[render] 封面响应不是二进制数据，使用占位块: %s', sanitizeUrl(url))
         return null
       }
       if (buffer.byteLength > COVER_MAX_BYTES) {
-        this.logger.debug('[render] 封面体积超过上限（%d bytes），使用占位块: %s', buffer.byteLength, url)
+        this.logger.debug('[render] 封面体积超过上限（%d bytes），使用占位块: %s', buffer.byteLength, sanitizeUrl(url))
         return null
       }
       return buffer
     } catch (error) {
-      this.logger.debug('[render] 封面下载失败，改用占位块（%s）: %s', url, errorMessage(error))
+      this.logger.debug('[render] 封面下载失败，改用占位块（%s）: %s', sanitizeUrl(url), errorMessage(error))
       this.http.hintOnFailure(error)
       return null
     }

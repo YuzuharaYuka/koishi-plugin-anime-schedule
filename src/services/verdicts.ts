@@ -10,7 +10,7 @@ import {
   VERDICT_CACHE_VERSION,
 } from '../constants'
 import type { IndexEntry } from '../data/bangumi-data'
-import { debugLog, errorMessage } from '../utils'
+import { errorMessage } from '../utils'
 
 /**
  * 判定缓存记录的原因。只保存**下次构建仍会得出同一结论**的判定：
@@ -127,7 +127,7 @@ export class VerdictCache {
           if (record.expiresAt <= Date.now()) continue
           this.records.set(record.key, record)
         }
-        debugLog('[verdict] 判定缓存载入完成，条目数: %d', this.records.size)
+        this.logger.debug('[verdict] 判定缓存载入完成，条目数: %d', this.records.size)
       } catch (error) {
         if ((error as { code?: string }).code !== 'ENOENT') {
           this.logger.warn('[verdict] 读取判定缓存失败，将从空缓存开始:', error)
@@ -221,7 +221,7 @@ export class VerdictCache {
       expiresAt: now + ttl,
     })
     this.dirty = true
-    debugLog('[verdict] 记录判定: %s → %s', entry.title, reason)
+    this.logger.debug('[verdict] 记录判定: %s → %s', entry.title, reason)
     this.scheduleFlush()
   }
 

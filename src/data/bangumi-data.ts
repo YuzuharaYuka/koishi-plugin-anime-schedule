@@ -6,7 +6,6 @@
 import type { Context, Logger } from 'koishi'
 import { ANILIST_ID_MAP } from '../schedule/anilist-ids'
 import type { HttpClient } from '../services/network'
-import { debugLog } from '../utils'
 import { foldTitle } from '../utils/fold'
 import type { BangumiDataItem, BroadcastSource } from './bangumi-data-source'
 import { resolveBroadcast, malIdOf, siteIdOf } from './bangumi-data-source'
@@ -136,7 +135,7 @@ export class BangumiDataIndex {
       const withId = this.entries.filter((entry) => entry.bangumiId !== null).length
       const translated = this.entries.filter((entry) => entry.zhHans).length
       this.logger.info('[index] bangumi-data 已载入 %d 部作品（来源: %s）', this.entries.length, this.sourceLabel)
-      debugLog(
+      this.logger.debug(
         '[index] 载入耗时 %dms | 带周期时刻 %d | 带 Bangumi 条目 ID %d | 带简中译名 %d',
         Date.now() - started,
         withBroadcast,
@@ -176,7 +175,7 @@ export class BangumiDataIndex {
       if (entry.beginMs === null) return false
       return entry.beginMs >= startMs && entry.beginMs < endMs
     })
-    debugLog(
+    this.logger.debug(
       '[index] 季度 %d-%d: %d 部（仅 TV / WEB，首播 %s ~ %s）',
       year,
       month,
@@ -223,7 +222,7 @@ export class BangumiDataIndex {
     }
 
     result.sort((a, b) => a.atMs - b.atMs || a.entry.title.localeCompare(b.entry.title))
-    debugLog(
+    this.logger.debug(
       '[index] 推算 %s ~ %s: 周期作品 %d 部 / 一次性 %d 部，命中场次 %d 条',
       new Date(fromMs).toISOString(),
       new Date(toMs).toISOString(),
@@ -270,7 +269,7 @@ export class BangumiDataIndex {
 
     scored.sort((a, b) => b.score - a.score || (a.entry.beginMs ?? 0) - (b.entry.beginMs ?? 0))
     const limited = limit > 0 ? scored.slice(0, limit) : scored
-    debugLog('[index] 检索「%s」命中 %d 条，返回 %d 条', keyword, scored.length, limited.length)
+    this.logger.debug('[index] 检索「%s」命中 %d 条，返回 %d 条', keyword, scored.length, limited.length)
     return limited.map((item) => item.entry)
   }
 
@@ -361,13 +360,13 @@ export class BangumiDataIndex {
         this.entryBySubject.set(entry.bangumiId, entry)
       }
     }
-    debugLog(
+    this.logger.debug(
       '[index] 排期来源: 顶层 %d / 站点补齐 %d / 仅一次性 %d；可重复推算 %d 部',
       sourceCount.top,
       sourceCount.site,
       sourceCount.none,
       recurringCount,
     )
-    if (mapped > 0) debugLog('[index] AniList ID 补充映射命中 %d 部', mapped)
+    if (mapped > 0) this.logger.debug('[index] AniList ID 补充映射命中 %d 部', mapped)
   }
 }

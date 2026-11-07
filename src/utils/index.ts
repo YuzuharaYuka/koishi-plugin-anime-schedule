@@ -120,33 +120,24 @@ export function retryDelay(attempt: number, base = 800, cap = 8000): number {
   return Math.min(cap, base * 2 ** attempt)
 }
 
-/**
- * 调试日志开关。
- *
- * 打开 `advanced.debug` 后，插件的每一步操作都会打到日志里：
- * 请求的 URL 与耗时、本地化命中情况、排期推算与过滤结果、失败原因等。
- * 各服务共享同一个开关，避免到处写 `if (config.advanced.debug)`。
- */
-let debugEnabled = false
-let debugLogger: Logger | null = null
-
-/**
- * 开启 / 关闭调试日志。
- *
- * 调试输出走 `logger.debug`，级别不够时会被直接丢掉，因此开启时把该 logger 的级别提到 3。
- * 关掉时恢复默认的 2（info），避免别处仍在输出调试细节。
- */
-export function setupDebug(enabled: boolean, logger: Logger): void {
-  debugEnabled = enabled
-  debugLogger = logger
-  // 只抬高、不压低：关闭时若用户自己在控制台设过更细的级别，不该被我们改掉
-  if (enabled) logger.level = 3
+/** 日志用 URL：只保留 origin 与 pathname，丢掉查询参数与片段里的凭据 */
+export function sanitizeUrl(raw: string): string {
+  try {
+    const url = new URL(raw)
+    return `${url.origin}${url.pathname}`
+  } catch {
+    return raw.split(/[?#]/, 1)[0]
+  }
 }
 
-/** 打印一条调试日志；未开启调试时是空操作 */
-export function debugLog(message: string, ...args: unknown[]): void {
-  if (!debugEnabled || !debugLogger) return
-  debugLogger.debug(message, ...args)
+/**
+ * 打开调试日志。
+ *
+ * 调试输出走 `logger.debug`，级别不够时会被直接丢掉，因此开启时把该 logger 的级别提到 3。
+ * 只抬高、不压低：关闭时若用户自己在控制台设过更细的级别，不该被我们改掉。
+ */
+export function setupDebug(enabled: boolean, logger: Logger): void {
+  if (enabled) logger.level = 3
 }
 
 /** 把毫秒数限制在给定区间内 */

@@ -8,7 +8,7 @@ import {
 } from '../constants'
 import type { HttpClient } from './network'
 import { computeScore, type Localizer } from './localizer'
-import { debugLog, errorMessage, errorStatus, mapLimit, unwrapPayload } from '../utils'
+import { errorMessage, errorStatus, mapLimit, unwrapPayload } from '../utils'
 import { today } from '../utils/time'
 
 /** anime.info 里 AniList 状态的缓存时长；详情页的状态不需要秒级新鲜 */
@@ -212,7 +212,7 @@ export class InfoService {
           if (!this.aniListCache.has(anilistKey(id))) this.rememberAniList(anilistKey(id), null)
         }
       } catch (error) {
-        debugLog('[info] AniList 批量查询 %d 个 ID 失败: %s', batch.length, errorMessage(error))
+        this.logger.debug('[info] AniList 批量查询 %d 个 ID 失败: %s', batch.length, errorMessage(error))
         // 只有限流/停用才值得冷却：普通网络错误冷却 5 分钟会让详情卡无谓地退化
         this.coolDownIfThrottled(error)
         return
@@ -244,7 +244,7 @@ export class InfoService {
     try {
       return await this.http.get<BgmSubject>(`${BANGUMI_API_HOST}/v0/subjects/${id}`)
     } catch (error) {
-      debugLog('[info] 取条目 %d 失败: %s', id, errorMessage(error))
+      this.logger.debug('[info] 取条目 %d 失败: %s', id, errorMessage(error))
       return null
     }
   }
@@ -254,7 +254,7 @@ export class InfoService {
       // `type=0` 只要正规集，排除 OP/ED 与 SP
       return await this.http.get<BgmEpisodes>(`${BANGUMI_API_HOST}/v0/episodes?subject_id=${id}&type=0&limit=200`)
     } catch (error) {
-      debugLog('[info] 取条目 %d 的逐集档期失败: %s', id, errorMessage(error))
+      this.logger.debug('[info] 取条目 %d 的逐集档期失败: %s', id, errorMessage(error))
       return null
     }
   }
@@ -296,7 +296,7 @@ export class InfoService {
       const payload = unwrapPayload(raw) as { data?: { Media?: AniListState } } | null
       state = payload?.data?.Media ?? null
       // 冷门条目匹配不到是正常结果，按 debug 记；真正的问题在下面的查询失败分支
-      if (!state) debugLog('[info] AniList 未匹配到「%s」', title)
+      if (!state) this.logger.debug('[info] AniList 未匹配到「%s」', title)
     } catch (error) {
       // AniList 取不到不影响主体信息，状态退化为按日期推算
       this.logger.warn('[info] AniList 查询「%s」失败（按日期推算）: %s', title, errorMessage(error))
